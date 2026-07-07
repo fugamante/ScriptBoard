@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scriptboard"
+version = "0.1.0"
+description = "Screenplay-to-storyboard prompt, job, and board tooling."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "ScriptBoard Maintainers" }
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: Text Processing",
+]
+dependencies = []
+
+[project.scripts]
+scriptboard = "scriptboard.cli:main"
+
+[tool.setuptools]
+packages = ["scriptboard", "storyboard_tool"]

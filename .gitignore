@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.DS_Store
+
+# Local generated storyboard artifacts
+Storyboard_Prompts.md
+Storyboard_Prompts.json
+Storyboard_Image_Jobs.json
+Storyboard_Panel_Catalog.md
+Storyboard_Board.html
+Storyboard_Annotations.json
+Storyboard_Erased_Panels.json
+Storyboard_Images/
