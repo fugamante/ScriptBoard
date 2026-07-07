@@ -79,6 +79,18 @@ def run_generate(args: argparse.Namespace) -> int:
     cwd = Path.cwd()
     config = load_config(args.config, base_dir=cwd)
     jobs_path = resolve_path(args.jobs or Path(config.outputs.image_jobs), cwd)
+    if args.dry_run:
+        raw = image_providers.load_ledger(jobs_path)
+        result = image_providers.generation_plan(
+            raw,
+            limit=args.limit,
+            retry_failed=args.retry_failed,
+            job_id=args.job_id,
+        )
+        result["provider"] = args.provider
+        print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
+        return 0
+
     provider = image_providers.make_provider(
         args.provider,
         model=args.model,
@@ -92,6 +104,7 @@ def run_generate(args: argparse.Namespace) -> int:
         limit=args.limit,
         retry_failed=args.retry_failed,
         stop_on_error=args.stop_on_error,
+        job_id=args.job_id,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
     return 0
@@ -151,6 +164,8 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--quality", default=image_providers.DEFAULT_OPENAI_IMAGE_QUALITY)
     generate_parser.add_argument("--output-format", default=image_providers.DEFAULT_OPENAI_IMAGE_FORMAT)
     generate_parser.add_argument("--limit", type=int, default=1, help="Maximum jobs to generate in this run.")
+    generate_parser.add_argument("--job-id", help="Generate or preview one exact job ID.")
+    generate_parser.add_argument("--dry-run", action="store_true", help="Preview selected jobs without writing files.")
     generate_parser.add_argument("--retry-failed", action="store_true", help="Retry failed jobs before pending jobs.")
     generate_parser.add_argument("--stop-on-error", action="store_true", help="Exit on the first provider failure.")
     generate_parser.set_defaults(func=run_generate)

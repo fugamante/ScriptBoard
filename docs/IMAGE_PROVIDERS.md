@@ -34,6 +34,21 @@ calls one provider for one image, writes bytes to `job.image_path`, stores a
 checksum, then marks the job `done`. Provider failures mark the job `failed`
 without deleting prior generated files.
 
+Use `--dry-run` before real provider calls. It prints a sanitized selection plan
+without instantiating a provider, writing the ledger, or writing image files:
+
+```bash
+scriptboard generate --dry-run --limit 1
+```
+
+Use `--job-id` after previewing or externally approving a specific panel. Exact
+job selection generates or previews only that job even when a larger limit is
+passed:
+
+```bash
+scriptboard generate --provider openai --job-id scene_001_panel_001
+```
+
 A provider implements:
 
 ```python
@@ -48,6 +63,10 @@ class ImageProvider(Protocol):
 `GenerationResult` returns image bytes and sanitized request metadata. It must
 not return API keys, browser auth state, signed URLs, or another copy of private
 prompt text.
+
+Dry-run job previews are also sanitized. They expose job IDs, scene IDs, panel
+indexes, prompt hashes, image paths, image-existence state, and provider status;
+they omit `prompt` and `script_passage`.
 
 ## Durable Metadata Schema
 

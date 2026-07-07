@@ -218,20 +218,86 @@ def refresh_summary(raw: dict[str, Any]) -> None:
     }
 
 
-def selected_jobs(raw: dict[str, Any], *, limit: int, retry_failed: bool = False) -> list[dict[str, Any]]:
+def job_image_path(job: dict[str, Any]) -> Path:
+    return Path(str(job.get("image_path") or ""))
+
+
+def job_selection_blocker(job: dict[str, Any], *, retry_failed: bool = False) -> str:
+    image_path = job_image_path(job)
+    if job.get("status") == "done" and image_path.exists():
+        return "job is already done and its image file exists"
+    if job.get("status") == "failed" and not retry_failed:
+        return "job is failed; pass --retry-failed to select it"
+    if image_path.exists():
+        return "image file already exists"
+    return ""
+
+
+def job_preview(job: dict[str, Any]) -> dict[str, Any]:
+    image_path = job_image_path(job)
+    provider = job.get("provider") or {}
+    return {
+        "id": job.get("id"),
+        "status": job.get("status"),
+        "scene_id": job.get("scene_id"),
+        "panel_index": job.get("panel_index"),
+        "panel_label": job.get("panel_label"),
+        "prompt_hash": job.get("prompt_hash"),
+        "image_path": str(image_path),
+        "image_exists": image_path.exists(),
+        "provider": provider.get("provider"),
+        "provider_status": provider.get("status"),
+    }
+
+
+def selected_jobs(
+    raw: dict[str, Any],
+    *,
+    limit: int,
+    retry_failed: bool = False,
+    job_id: str | None = None,
+) -> list[dict[str, Any]]:
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    if job_id:
+        for job in raw.get("jobs", []):
+            if job.get("id") != job_id:
+                continue
+            blocker = job_selection_blocker(job, retry_failed=retry_failed)
+            if blocker:
+                raise ProviderError(f"Job {job_id} is not selectable: {blocker}")
+            return [job]
+        raise ProviderError(f"Job id not found: {job_id}")
+
     jobs = []
     for job in raw.get("jobs", []):
-        image_path = Path(str(job.get("image_path") or ""))
-        if job.get("status") == "done" and image_path.exists():
-            continue
-        if job.get("status") == "failed" and not retry_failed:
-            continue
-        if image_path.exists():
+        if job_selection_blocker(job, retry_failed=retry_failed):
             continue
         jobs.append(job)
         if len(jobs) >= limit:
             break
     return jobs
+
+
+def generation_plan(
+    raw: dict[str, Any],
+    *,
+    limit: int,
+    retry_failed: bool = False,
+    job_id: str | None = None,
+) -> dict[str, Any]:
+    refresh_summary(raw)
+    selected = selected_jobs(raw, limit=limit, retry_failed=retry_failed, job_id=job_id)
+    return {
+        "summary": raw.get("summary", {}),
+        "selection": {
+            "limit": limit,
+            "retry_failed": retry_failed,
+            "job_id": job_id,
+            "selected": len(selected),
+        },
+        "jobs": [job_preview(job) for job in selected],
+    }
 
 
 def provider_metadata(
@@ -279,9 +345,10 @@ def run_provider_generation(
     limit: int,
     retry_failed: bool = False,
     stop_on_error: bool = False,
+    job_id: str | None = None,
 ) -> dict[str, int]:
     raw = load_ledger(ledger_path)
-    selected = selected_jobs(raw, limit=limit, retry_failed=retry_failed)
+    selected = selected_jobs(raw, limit=limit, retry_failed=retry_failed, job_id=job_id)
     counts = {"selected": len(selected), "completed": 0, "failed": 0}
     for job in selected:
         started_at = utc_now()

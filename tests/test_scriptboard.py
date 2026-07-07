@@ -381,6 +381,56 @@ class ScriptBoardTests(unittest.TestCase):
         self.assertEqual(resumed["jobs"][0]["status"], "done")
         self.assertTrue(resumed_image_exists)
 
+    def test_generation_plan_omits_private_prompt_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=2)
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+
+            plan = image_providers.generation_plan(raw, limit=1)
+
+        self.assertEqual(plan["selection"]["selected"], 1)
+        self.assertEqual(plan["jobs"][0]["id"], "job-1")
+        self.assertIn("prompt_hash", plan["jobs"][0])
+        self.assertNotIn("prompt", plan["jobs"][0])
+        self.assertNotIn("script_passage", plan["jobs"][0])
+
+    def test_cli_generate_dry_run_is_read_only_and_does_not_require_provider_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            before = ledger_path.read_text(encoding="utf-8")
+
+            self.assertEqual(
+                cli.main(["generate", "--jobs", str(ledger_path), "--provider", "openai", "--dry-run"]),
+                0,
+            )
+            after = ledger_path.read_text(encoding="utf-8")
+            raw = json.loads(after)
+
+        self.assertEqual(after, before)
+        self.assertFalse(Path(raw["jobs"][0]["image_path"]).exists())
+
+    def test_provider_generation_targets_exact_job_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=2)
+
+            result = image_providers.run_provider_generation(
+                ledger_path,
+                image_providers.FakeImageProvider(),
+                limit=10,
+                job_id="job-2",
+            )
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+            first_image_exists = Path(raw["jobs"][0]["image_path"]).exists()
+            second_image_exists = Path(raw["jobs"][1]["image_path"]).exists()
+
+        self.assertEqual(result, {"selected": 1, "completed": 1, "failed": 0})
+        self.assertEqual([job["status"] for job in raw["jobs"]], ["pending", "done"])
+        self.assertFalse(first_image_exists)
+        self.assertTrue(second_image_exists)
+
     def test_cli_generate_routes_through_fake_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

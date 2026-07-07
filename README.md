@@ -63,6 +63,18 @@ provider is `openai` and reads credentials from `OPENAI_API_KEY`; no API key is
 written to repository files. Use `--provider fake` for deterministic local tests
 without network access or credentials.
 
+Preview the next provider selection before a real run:
+
+```bash
+scriptboard generate --dry-run --limit 1
+```
+
+After reviewing the non-sensitive job metadata, target one exact job:
+
+```bash
+scriptboard generate --provider openai --job-id <job-id>
+```
+
 ## Project Configuration
 
 ScriptBoard looks for `ScriptBoard_Config.json` in the active screenplay
