@@ -1,15 +1,53 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from scriptboard import board, builder, cli, image_jobs
+from scriptboard import board, builder, cli, image_jobs, image_providers
 from scriptboard.config import load_config
 
 
 class ScriptBoardTests(unittest.TestCase):
+    def write_provider_ledger(self, root: Path, *, count: int = 2) -> Path:
+        jobs = []
+        for index in range(1, count + 1):
+            job_id = f"job-{index}"
+            jobs.append(
+                {
+                    "id": job_id,
+                    "status": "pending",
+                    "scene_id": "scene_001_room",
+                    "scene_title": "INT. ROOM - DAY",
+                    "panel_index": index,
+                    "panel_label": f"Panel {index}",
+                    "script_passage": f"A test action beat {index}.",
+                    "prompt": f"Storyboard prompt {index}",
+                    "prompt_hash": f"hash-{index}",
+                    "image_path": str(root / "Storyboard_Images" / "scene_001_room" / f"panel_{index:03d}.png"),
+                    "updated_at": None,
+                    "notes": "",
+                }
+            )
+        ledger_path = root / "Storyboard_Image_Jobs.json"
+        ledger_path.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-01-01T00:00:00",
+                    "source": str(root / "Storyboard_Prompts.json"),
+                    "images_dir": str(root / "Storyboard_Images"),
+                    "summary": {"total": count, "pending": count, "done": 0},
+                    "jobs": jobs,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return ledger_path
+
     def test_render_fdx_text_preserves_screenplay_paragraph_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Draft_Test.fdx"
@@ -260,6 +298,102 @@ class ScriptBoardTests(unittest.TestCase):
         self.assertIn("- Status: generated", catalog)
         self.assertIn("A door opens.", catalog)
         self.assertIn("duplicate script segment, weak visual basis", catalog)
+
+    def test_fake_provider_generates_checksums_and_resumes_pending_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=2)
+            provider = image_providers.FakeImageProvider()
+
+            first = image_providers.run_provider_generation(ledger_path, provider, limit=1)
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+            first_job = raw["jobs"][0]
+            first_image = Path(first_job["image_path"])
+            first_bytes = first_image.read_bytes()
+
+            self.assertEqual(first, {"selected": 1, "completed": 1, "failed": 0})
+            self.assertEqual(raw["summary"], {"total": 2, "pending": 1, "done": 1, "failed": 0})
+            self.assertEqual(first_job["status"], "done")
+            self.assertTrue(first_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+            self.assertEqual(first_job["provider"]["provider"], "fake")
+            self.assertEqual(first_job["provider"]["checksum_sha256"], hashlib.sha256(first_bytes).hexdigest())
+
+            second = image_providers.run_provider_generation(ledger_path, provider, limit=10)
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(second, {"selected": 1, "completed": 1, "failed": 0})
+        self.assertEqual(raw["summary"], {"total": 2, "pending": 0, "done": 2, "failed": 0})
+        self.assertEqual([job["status"] for job in raw["jobs"]], ["done", "done"])
+
+    def test_fake_provider_retries_failed_jobs_only_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+
+            failed = image_providers.run_provider_generation(
+                ledger_path,
+                image_providers.FakeImageProvider(fail_job_ids={"job-1"}),
+                limit=1,
+            )
+            skipped = image_providers.run_provider_generation(
+                ledger_path,
+                image_providers.FakeImageProvider(),
+                limit=1,
+            )
+            retried = image_providers.run_provider_generation(
+                ledger_path,
+                image_providers.FakeImageProvider(),
+                limit=1,
+                retry_failed=True,
+            )
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(failed, {"selected": 1, "completed": 0, "failed": 1})
+        self.assertEqual(skipped, {"selected": 0, "completed": 0, "failed": 0})
+        self.assertEqual(retried, {"selected": 1, "completed": 1, "failed": 0})
+        self.assertEqual(raw["summary"], {"total": 1, "pending": 0, "done": 1, "failed": 0})
+        self.assertEqual(raw["jobs"][0]["provider"]["status"], "done")
+
+    def test_provider_generation_resumes_running_jobs_after_interruption(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+            raw["jobs"][0]["status"] = "running"
+            raw["jobs"][0]["provider"] = {
+                "provider": "fake",
+                "model": "fake-image-provider",
+                "status": "running",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "completed_at": None,
+            }
+            ledger_path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+
+            result = image_providers.run_provider_generation(
+                ledger_path,
+                image_providers.FakeImageProvider(),
+                limit=1,
+            )
+            resumed = json.loads(ledger_path.read_text(encoding="utf-8"))
+            resumed_image_exists = Path(resumed["jobs"][0]["image_path"]).exists()
+
+        self.assertEqual(result, {"selected": 1, "completed": 1, "failed": 0})
+        self.assertEqual(resumed["jobs"][0]["status"], "done")
+        self.assertTrue(resumed_image_exists)
+
+    def test_cli_generate_routes_through_fake_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+
+            self.assertEqual(
+                cli.main(["generate", "--jobs", str(ledger_path), "--provider", "fake", "--limit", "1"]),
+                0,
+            )
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(raw["summary"], {"total": 1, "pending": 0, "done": 1, "failed": 0})
+        self.assertEqual(raw["jobs"][0]["provider"]["provider"], "fake")
 
     def test_cli_build_jobs_board_and_cleanup_route_through_temp_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

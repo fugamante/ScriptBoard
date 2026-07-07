@@ -10,6 +10,9 @@ Recommended integration patterns:
 - Keep generated storyboard files inside each screenplay project folder.
 - Add project-specific `ScriptBoard_Config.json` files for title, visual style,
   board copy, safety substitutions, source priority, and artifact names.
+- Use `scriptboard generate --provider openai` as the primary image-generation
+  path once `OPENAI_API_KEY` is available. Use `--provider fake` for local
+  validation without credentials or network access.
 - Keep any legacy wrapper scripts in the screenplay project as thin entrypoints
   that call the installed package or `python3 -m scriptboard`.
 

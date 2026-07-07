@@ -10,9 +10,10 @@ The current implementation supports:
 - scene detection and visual beat selection
 - configurable prompt style and project metadata
 - resumable image-job JSON generation
+- provider-neutral image generation with OpenAI Image API support
 - panel catalog generation with basic validation warnings
 - local HTML storyboard board rendering
-- optional Safari/ChatGPT image-generation inspection and fallback helpers
+- optional Safari/ChatGPT inspection and legacy fallback helpers
 
 ## Install
 
@@ -42,6 +43,7 @@ similarly named scene files:
 ```bash
 scriptboard build
 scriptboard jobs
+scriptboard generate --provider openai --limit 1
 scriptboard board
 ```
 
@@ -53,6 +55,13 @@ Default outputs are written beside the source draft files:
 - `Storyboard_Panel_Catalog.md`
 - `Storyboard_Board.html`
 - `Storyboard_Images/`
+
+`scriptboard generate` reads `Storyboard_Image_Jobs.json`, generates pending
+jobs through the selected provider, writes local image files, and records
+provider metadata plus a SHA-256 checksum in the job ledger. The default
+provider is `openai` and reads credentials from `OPENAI_API_KEY`; no API key is
+written to repository files. Use `--provider fake` for deterministic local tests
+without network access or credentials.
 
 ## Project Configuration
 
@@ -87,13 +96,18 @@ Config areas:
 ```bash
 scriptboard build
 scriptboard jobs
+scriptboard generate
 scriptboard board
 scriptboard cleanup
 scriptboard inspect-visible-images
 ```
 
-`inspect-visible-images` depends on a local Safari session and is intended as an
-optional bridge for workflows that use ChatGPT image generation manually.
+`generate` is the primary provider-backed image path. `inspect-visible-images`
+depends on a local Safari session and is retained only as an optional legacy
+bridge for workflows that use ChatGPT image generation manually.
+
+See `docs/IMAGE_PROVIDERS.md` for the provider contract, durable job metadata
+schema, OpenAI API path, fake-provider test path, and future provider lanes.
 
 ## Development
 

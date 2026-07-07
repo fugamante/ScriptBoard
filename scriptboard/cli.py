@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from scriptboard import board, builder, cleanup_removed, image_jobs, safari_generate
+from scriptboard import board, builder, cleanup_removed, image_jobs, image_providers, safari_generate
 from scriptboard.config import load_config
 
 
@@ -75,6 +75,28 @@ def run_cleanup(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_generate(args: argparse.Namespace) -> int:
+    cwd = Path.cwd()
+    config = load_config(args.config, base_dir=cwd)
+    jobs_path = resolve_path(args.jobs or Path(config.outputs.image_jobs), cwd)
+    provider = image_providers.make_provider(
+        args.provider,
+        model=args.model,
+        size=args.size,
+        quality=args.quality,
+        output_format=args.output_format,
+    )
+    result = image_providers.run_provider_generation(
+        jobs_path,
+        provider,
+        limit=args.limit,
+        retry_failed=args.retry_failed,
+        stop_on_error=args.stop_on_error,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
+    return 0
+
+
 def run_inspect_visible_images(args: argparse.Namespace) -> int:
     cwd = Path.cwd()
     config = load_config(args.config, base_dir=cwd)
@@ -116,6 +138,22 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_parser.add_argument("--removed", type=Path)
     cleanup_parser.add_argument("--images-dir", type=Path)
     cleanup_parser.set_defaults(func=run_cleanup)
+
+    generate_parser = subparsers.add_parser(
+        "generate",
+        help="Generate pending storyboard images through a provider backend.",
+    )
+    add_config_arg(generate_parser)
+    generate_parser.add_argument("--jobs", type=Path, help="Storyboard image-job ledger path.")
+    generate_parser.add_argument("--provider", choices=["openai", "fake"], default="openai")
+    generate_parser.add_argument("--model", help="Provider model override.")
+    generate_parser.add_argument("--size", default=image_providers.DEFAULT_OPENAI_IMAGE_SIZE)
+    generate_parser.add_argument("--quality", default=image_providers.DEFAULT_OPENAI_IMAGE_QUALITY)
+    generate_parser.add_argument("--output-format", default=image_providers.DEFAULT_OPENAI_IMAGE_FORMAT)
+    generate_parser.add_argument("--limit", type=int, default=1, help="Maximum jobs to generate in this run.")
+    generate_parser.add_argument("--retry-failed", action="store_true", help="Retry failed jobs before pending jobs.")
+    generate_parser.add_argument("--stop-on-error", action="store_true", help="Exit on the first provider failure.")
+    generate_parser.set_defaults(func=run_generate)
 
     inspect_parser = subparsers.add_parser(
         "inspect-visible-images",
