@@ -28,6 +28,20 @@ The active CLI command is:
 scriptboard generate --provider openai --limit 1
 ```
 
+The safe review command is:
+
+```bash
+scriptboard plan --limit 5
+```
+
+`scriptboard plan` is read-only. It prints sanitized job metadata so operators
+can choose exact job IDs before calling a provider. It supports:
+
+- `--status pending` for the default selectable queue
+- `--status failed` for failed-job review
+- `--status all` for a bounded ledger overview
+- `--job-id <job-id>` for one exact sanitized job
+
 `scriptboard generate` loads `Storyboard_Image_Jobs.json`, selects jobs whose
 image file is missing, marks each selected job `running`, saves the ledger,
 calls one provider for one image, writes bytes to `job.image_path`, stores a
@@ -49,6 +63,13 @@ passed:
 scriptboard generate --provider openai --job-id scene_001_panel_001
 ```
 
+Failed jobs require explicit retry intent:
+
+```bash
+scriptboard plan --status failed
+scriptboard generate --provider openai --job-id scene_001_panel_001 --retry-failed
+```
+
 A provider implements:
 
 ```python
@@ -64,7 +85,7 @@ class ImageProvider(Protocol):
 not return API keys, browser auth state, signed URLs, or another copy of private
 prompt text.
 
-Dry-run job previews are also sanitized. They expose job IDs, scene IDs, panel
+Plan and dry-run job previews are sanitized. They expose job IDs, scene IDs, panel
 indexes, prompt hashes, image paths, image-existence state, and provider status;
 they omit `prompt` and `script_passage`.
 

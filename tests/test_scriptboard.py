@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import redirect_stderr
 import hashlib
+from io import StringIO
 import json
 import tempfile
 import unittest
@@ -394,6 +396,53 @@ class ScriptBoardTests(unittest.TestCase):
         self.assertIn("prompt_hash", plan["jobs"][0])
         self.assertNotIn("prompt", plan["jobs"][0])
         self.assertNotIn("script_passage", plan["jobs"][0])
+
+    def test_cli_plan_reviews_pending_jobs_without_private_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=2)
+            before = ledger_path.read_text(encoding="utf-8")
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                self.assertEqual(cli.main(["plan", "--jobs", str(ledger_path), "--limit", "2"]), 0)
+            after = ledger_path.read_text(encoding="utf-8")
+            plan = json.loads(stderr.getvalue())
+
+        self.assertEqual(after, before)
+        self.assertEqual(plan["review"]["status"], "pending")
+        self.assertEqual([job["id"] for job in plan["jobs"]], ["job-1", "job-2"])
+        self.assertTrue(all(job["selectable"] for job in plan["jobs"]))
+        self.assertNotIn("Storyboard prompt", stderr.getvalue())
+        self.assertNotIn("A test action beat", stderr.getvalue())
+
+    def test_cli_plan_filters_failed_jobs_and_exact_job_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=2)
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+            raw["jobs"][1]["status"] = "failed"
+            raw["jobs"][1]["notes"] = "provider failed"
+            ledger_path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+            failed_stderr = StringIO()
+            exact_stderr = StringIO()
+
+            with redirect_stderr(failed_stderr):
+                self.assertEqual(
+                    cli.main(["plan", "--jobs", str(ledger_path), "--status", "failed", "--limit", "5"]),
+                    0,
+                )
+            with redirect_stderr(exact_stderr):
+                self.assertEqual(cli.main(["plan", "--jobs", str(ledger_path), "--job-id", "job-1"]), 0)
+            failed_plan = json.loads(failed_stderr.getvalue())
+            exact_plan = json.loads(exact_stderr.getvalue())
+
+        self.assertEqual([job["id"] for job in failed_plan["jobs"]], ["job-2"])
+        self.assertFalse(failed_plan["jobs"][0]["selectable"])
+        self.assertIn("--retry-failed", failed_plan["jobs"][0]["blocker"])
+        self.assertEqual([job["id"] for job in exact_plan["jobs"]], ["job-1"])
+        self.assertNotIn("Storyboard prompt", failed_stderr.getvalue())
+        self.assertNotIn("A test action beat", exact_stderr.getvalue())
 
     def test_cli_generate_dry_run_is_read_only_and_does_not_require_provider_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

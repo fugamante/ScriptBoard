@@ -13,6 +13,8 @@ Recommended integration patterns:
 - Use `scriptboard generate --provider openai` as the primary image-generation
   path once `OPENAI_API_KEY` is available. Use `--provider fake` for local
   validation without credentials or network access.
+- Review pending image jobs with `scriptboard plan` and prefer exact
+  `scriptboard generate --job-id <job-id>` runs for real provider work.
 - Keep any legacy wrapper scripts in the screenplay project as thin entrypoints
   that call the installed package or `python3 -m scriptboard`.
 

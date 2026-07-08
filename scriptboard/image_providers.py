@@ -250,6 +250,14 @@ def job_preview(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def job_review(job: dict[str, Any], *, retry_failed: bool = False) -> dict[str, Any]:
+    blocker = job_selection_blocker(job, retry_failed=retry_failed)
+    review = job_preview(job)
+    review["selectable"] = not blocker
+    review["blocker"] = blocker or None
+    return review
+
+
 def selected_jobs(
     raw: dict[str, Any],
     *,
@@ -297,6 +305,54 @@ def generation_plan(
             "selected": len(selected),
         },
         "jobs": [job_preview(job) for job in selected],
+    }
+
+
+def review_plan(
+    raw: dict[str, Any],
+    *,
+    limit: int,
+    status: str = "pending",
+    job_id: str | None = None,
+    retry_failed: bool = False,
+) -> dict[str, Any]:
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    if status not in {"pending", "failed", "all"}:
+        raise ValueError(f"Unknown review status: {status}")
+    refresh_summary(raw)
+
+    matches = []
+    if job_id:
+        for job in raw.get("jobs", []):
+            if job.get("id") == job_id:
+                matches.append(job)
+                break
+        if not matches:
+            raise ProviderError(f"Job id not found: {job_id}")
+    else:
+        for job in raw.get("jobs", []):
+            job_status = str(job.get("status") or "")
+            if status == "pending" and (
+                job_status == "failed" or job_selection_blocker(job, retry_failed=False)
+            ):
+                continue
+            if status == "failed" and job_status != "failed":
+                continue
+            matches.append(job)
+            if len(matches) >= limit:
+                break
+
+    return {
+        "summary": raw.get("summary", {}),
+        "review": {
+            "limit": limit,
+            "status": status,
+            "job_id": job_id,
+            "retry_failed": retry_failed,
+            "selected": len(matches),
+        },
+        "jobs": [job_review(job, retry_failed=retry_failed) for job in matches],
     }
 
 

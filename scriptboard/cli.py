@@ -110,6 +110,22 @@ def run_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_plan(args: argparse.Namespace) -> int:
+    cwd = Path.cwd()
+    config = load_config(args.config, base_dir=cwd)
+    jobs_path = resolve_path(args.jobs or Path(config.outputs.image_jobs), cwd)
+    raw = image_providers.load_ledger(jobs_path)
+    result = image_providers.review_plan(
+        raw,
+        limit=args.limit,
+        status=args.status,
+        job_id=args.job_id,
+        retry_failed=args.retry_failed,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
+    return 0
+
+
 def run_inspect_visible_images(args: argparse.Namespace) -> int:
     cwd = Path.cwd()
     config = load_config(args.config, base_dir=cwd)
@@ -151,6 +167,18 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_parser.add_argument("--removed", type=Path)
     cleanup_parser.add_argument("--images-dir", type=Path)
     cleanup_parser.set_defaults(func=run_cleanup)
+
+    plan_parser = subparsers.add_parser(
+        "plan",
+        help="Review sanitized storyboard image jobs before generation.",
+    )
+    add_config_arg(plan_parser)
+    plan_parser.add_argument("--jobs", type=Path, help="Storyboard image-job ledger path.")
+    plan_parser.add_argument("--limit", type=int, default=10, help="Maximum jobs to show.")
+    plan_parser.add_argument("--status", choices=["pending", "failed", "all"], default="pending")
+    plan_parser.add_argument("--job-id", help="Review one exact job ID regardless of status filter.")
+    plan_parser.add_argument("--retry-failed", action="store_true", help="Show failed jobs as selectable for retry.")
+    plan_parser.set_defaults(func=run_plan)
 
     generate_parser = subparsers.add_parser(
         "generate",

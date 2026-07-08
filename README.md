@@ -43,6 +43,7 @@ similarly named scene files:
 ```bash
 scriptboard build
 scriptboard jobs
+scriptboard plan --limit 5
 scriptboard generate --provider openai --limit 1
 scriptboard board
 ```
@@ -63,16 +64,27 @@ provider is `openai` and reads credentials from `OPENAI_API_KEY`; no API key is
 written to repository files. Use `--provider fake` for deterministic local tests
 without network access or credentials.
 
-Preview the next provider selection before a real run:
+Review pending jobs before a real run:
 
 ```bash
-scriptboard generate --dry-run --limit 1
+scriptboard plan --limit 5
 ```
 
-After reviewing the non-sensitive job metadata, target one exact job:
+After reviewing the non-sensitive job metadata, target one exact job. Use
+`generate --dry-run` to verify the mutating command's selection without writing
+the ledger or image files:
 
 ```bash
+scriptboard generate --dry-run --job-id <job-id>
 scriptboard generate --provider openai --job-id <job-id>
+```
+
+Failed jobs are hidden from the default pending review. Inspect them explicitly
+and retry only when intended:
+
+```bash
+scriptboard plan --status failed
+scriptboard generate --job-id <job-id> --retry-failed
 ```
 
 ## Project Configuration
@@ -108,6 +120,7 @@ Config areas:
 ```bash
 scriptboard build
 scriptboard jobs
+scriptboard plan
 scriptboard generate
 scriptboard board
 scriptboard cleanup
