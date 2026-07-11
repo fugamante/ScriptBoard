@@ -19,6 +19,7 @@ DEFAULT_OPENAI_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_OPENAI_IMAGE_SIZE = "1536x1024"
 DEFAULT_OPENAI_IMAGE_QUALITY = "medium"
 DEFAULT_OPENAI_IMAGE_FORMAT = "png"
+READY_PROMPT_REVISION_STATUS = "ready"
 
 
 class ProviderError(RuntimeError):
@@ -52,6 +53,10 @@ def utc_now() -> str:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def prompt_text_hash(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
 
 
 def png_chunk(kind: bytes, data: bytes) -> bytes:
@@ -200,6 +205,27 @@ def load_ledger(ledger_path: Path) -> dict[str, Any]:
     return json.loads(ledger_path.read_text(encoding="utf-8"))
 
 
+def load_prompt_revisions(revisions_path: Path | None) -> dict[str, dict[str, Any]]:
+    if revisions_path is None:
+        return {}
+    raw = json.loads(revisions_path.read_text(encoding="utf-8"))
+    entries = raw.get("revisions", [])
+    if not isinstance(entries, list):
+        raise ProviderError("Prompt revision file must contain a revisions list")
+
+    revisions: dict[str, dict[str, Any]] = {}
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise ProviderError(f"Prompt revision entry {index} must be an object")
+        job_id = str(entry.get("job_id") or "").strip()
+        if not job_id:
+            raise ProviderError(f"Prompt revision entry {index} is missing job_id")
+        if job_id in revisions:
+            raise ProviderError(f"Duplicate prompt revision for job_id {job_id}")
+        revisions[job_id] = entry
+    return revisions
+
+
 def save_ledger(ledger_path: Path, raw: dict[str, Any]) -> None:
     refresh_summary(raw)
     raw["generated_at"] = utc_now()
@@ -222,21 +248,95 @@ def job_image_path(job: dict[str, Any]) -> Path:
     return Path(str(job.get("image_path") or ""))
 
 
-def job_selection_blocker(job: dict[str, Any], *, retry_failed: bool = False) -> str:
+def prompt_revision_review(
+    job: dict[str, Any],
+    *,
+    prompt_revisions: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    if not prompt_revisions:
+        return None
+    job_id = str(job.get("id") or "")
+    revision = prompt_revisions.get(job_id)
+    if revision is None:
+        return None
+
+    status = str(revision.get("status") or "").strip().lower()
+    source_hash = str(revision.get("source_prompt_hash") or "").strip()
+    current_hash = str(job.get("prompt_hash") or "").strip()
+    revised_prompt = str(revision.get("revised_prompt") or "")
+    revised_hash = None
+    blocker = ""
+
+    if status != READY_PROMPT_REVISION_STATUS:
+        blocker = "prompt revision is not ready"
+    elif not source_hash:
+        blocker = "prompt revision is missing source_prompt_hash"
+    elif source_hash != current_hash:
+        blocker = "prompt revision source_prompt_hash does not match job prompt_hash"
+    elif not revised_prompt.strip():
+        blocker = "prompt revision is ready but revised_prompt is empty"
+    else:
+        revised_hash = prompt_text_hash(revised_prompt)
+
+    return {
+        "status": status or None,
+        "source_prompt_hash": source_hash or None,
+        "current_prompt_hash": current_hash or None,
+        "revised_prompt_hash": revised_hash,
+        "applies": not blocker,
+        "blocker": blocker or None,
+    }
+
+
+def prompt_revision_metadata(review: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not review:
+        return None
+    return {
+        "status": review.get("status"),
+        "source_prompt_hash": review.get("source_prompt_hash"),
+        "revised_prompt_hash": review.get("revised_prompt_hash"),
+    }
+
+
+def job_selection_blockers(
+    job: dict[str, Any],
+    *,
+    retry_failed: bool = False,
+    prompt_revisions: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    blockers = []
     image_path = job_image_path(job)
     if job.get("status") == "done" and image_path.exists():
-        return "job is already done and its image file exists"
+        blockers.append("job is already done and its image file exists")
     if job.get("status") == "failed" and not retry_failed:
-        return "job is failed; pass --retry-failed to select it"
+        blockers.append("job is failed; pass --retry-failed to select it")
     if image_path.exists():
-        return "image file already exists"
-    return ""
+        blockers.append("image file already exists")
+    revision = prompt_revision_review(job, prompt_revisions=prompt_revisions)
+    if revision and revision.get("blocker"):
+        blockers.append(str(revision["blocker"]))
+    return blockers
 
 
-def job_preview(job: dict[str, Any]) -> dict[str, Any]:
+def job_selection_blocker(
+    job: dict[str, Any],
+    *,
+    retry_failed: bool = False,
+    prompt_revisions: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    return "; ".join(
+        job_selection_blockers(job, retry_failed=retry_failed, prompt_revisions=prompt_revisions)
+    )
+
+
+def job_preview(
+    job: dict[str, Any],
+    *,
+    prompt_revisions: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     image_path = job_image_path(job)
     provider = job.get("provider") or {}
-    return {
+    preview = {
         "id": job.get("id"),
         "status": job.get("status"),
         "scene_id": job.get("scene_id"),
@@ -248,14 +348,42 @@ def job_preview(job: dict[str, Any]) -> dict[str, Any]:
         "provider": provider.get("provider"),
         "provider_status": provider.get("status"),
     }
+    revision = prompt_revision_review(job, prompt_revisions=prompt_revisions)
+    if revision:
+        preview["revision"] = revision
+    return preview
 
 
-def job_review(job: dict[str, Any], *, retry_failed: bool = False) -> dict[str, Any]:
-    blocker = job_selection_blocker(job, retry_failed=retry_failed)
-    review = job_preview(job)
-    review["selectable"] = not blocker
-    review["blocker"] = blocker or None
+def job_review(
+    job: dict[str, Any],
+    *,
+    retry_failed: bool = False,
+    prompt_revisions: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    blockers = job_selection_blockers(job, retry_failed=retry_failed, prompt_revisions=prompt_revisions)
+    review = job_preview(job, prompt_revisions=prompt_revisions)
+    review["selectable"] = not blockers
+    review["blocker"] = "; ".join(blockers) if blockers else None
+    review["blockers"] = blockers
     return review
+
+
+def provider_job_with_prompt_revision(
+    job: dict[str, Any],
+    *,
+    prompt_revisions: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    review = prompt_revision_review(job, prompt_revisions=prompt_revisions)
+    if not review:
+        return job, None
+    if review.get("blocker"):
+        raise ProviderError(f"Job {job.get('id')} prompt revision is not usable: {review['blocker']}")
+
+    revision = (prompt_revisions or {})[str(job.get("id") or "")]
+    run_job = dict(job)
+    run_job["prompt"] = str(revision.get("revised_prompt") or "")
+    run_job["prompt_hash"] = str(review.get("revised_prompt_hash") or "")
+    return run_job, prompt_revision_metadata(review)
 
 
 def selected_jobs(
@@ -264,6 +392,7 @@ def selected_jobs(
     limit: int,
     retry_failed: bool = False,
     job_id: str | None = None,
+    prompt_revisions: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -271,7 +400,11 @@ def selected_jobs(
         for job in raw.get("jobs", []):
             if job.get("id") != job_id:
                 continue
-            blocker = job_selection_blocker(job, retry_failed=retry_failed)
+            blocker = job_selection_blocker(
+                job,
+                retry_failed=retry_failed,
+                prompt_revisions=prompt_revisions,
+            )
             if blocker:
                 raise ProviderError(f"Job {job_id} is not selectable: {blocker}")
             return [job]
@@ -279,7 +412,7 @@ def selected_jobs(
 
     jobs = []
     for job in raw.get("jobs", []):
-        if job_selection_blocker(job, retry_failed=retry_failed):
+        if job_selection_blocker(job, retry_failed=retry_failed, prompt_revisions=prompt_revisions):
             continue
         jobs.append(job)
         if len(jobs) >= limit:
@@ -293,9 +426,16 @@ def generation_plan(
     limit: int,
     retry_failed: bool = False,
     job_id: str | None = None,
+    prompt_revisions: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     refresh_summary(raw)
-    selected = selected_jobs(raw, limit=limit, retry_failed=retry_failed, job_id=job_id)
+    selected = selected_jobs(
+        raw,
+        limit=limit,
+        retry_failed=retry_failed,
+        job_id=job_id,
+        prompt_revisions=prompt_revisions,
+    )
     return {
         "summary": raw.get("summary", {}),
         "selection": {
@@ -303,8 +443,9 @@ def generation_plan(
             "retry_failed": retry_failed,
             "job_id": job_id,
             "selected": len(selected),
+            "revisions": bool(prompt_revisions),
         },
-        "jobs": [job_preview(job) for job in selected],
+        "jobs": [job_preview(job, prompt_revisions=prompt_revisions) for job in selected],
     }
 
 
@@ -315,6 +456,7 @@ def review_plan(
     status: str = "pending",
     job_id: str | None = None,
     retry_failed: bool = False,
+    prompt_revisions: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -350,9 +492,13 @@ def review_plan(
             "status": status,
             "job_id": job_id,
             "retry_failed": retry_failed,
+            "revisions": bool(prompt_revisions),
             "selected": len(matches),
         },
-        "jobs": [job_review(job, retry_failed=retry_failed) for job in matches],
+        "jobs": [
+            job_review(job, retry_failed=retry_failed, prompt_revisions=prompt_revisions)
+            for job in matches
+        ],
     }
 
 
@@ -366,6 +512,7 @@ def provider_metadata(
     checksum: str | None = None,
     output_path: str | None = None,
     error_message: str | None = None,
+    prompt_revision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "provider": provider.name,
@@ -391,6 +538,8 @@ def provider_metadata(
         metadata["output_path"] = output_path
     if error_message:
         metadata["error"] = error_message
+    if prompt_revision:
+        metadata["prompt_revision"] = prompt_revision
     return metadata
 
 
@@ -402,18 +551,35 @@ def run_provider_generation(
     retry_failed: bool = False,
     stop_on_error: bool = False,
     job_id: str | None = None,
+    prompt_revisions: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     raw = load_ledger(ledger_path)
-    selected = selected_jobs(raw, limit=limit, retry_failed=retry_failed, job_id=job_id)
+    selected = selected_jobs(
+        raw,
+        limit=limit,
+        retry_failed=retry_failed,
+        job_id=job_id,
+        prompt_revisions=prompt_revisions,
+    )
     counts = {"selected": len(selected), "completed": 0, "failed": 0}
     for job in selected:
         started_at = utc_now()
+        provider_job, prompt_revision = provider_job_with_prompt_revision(
+            job,
+            prompt_revisions=prompt_revisions,
+        )
         job["status"] = "running"
         job["updated_at"] = started_at
-        job["provider"] = provider_metadata(provider=provider, result=None, status="running", started_at=started_at)
+        job["provider"] = provider_metadata(
+            provider=provider,
+            result=None,
+            status="running",
+            started_at=started_at,
+            prompt_revision=prompt_revision,
+        )
         save_ledger(ledger_path, raw)
         try:
-            result = provider.generate(job)
+            result = provider.generate(provider_job)
             output = Path(str(job["image_path"]))
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(result.image_bytes)
@@ -431,6 +597,7 @@ def run_provider_generation(
                 completed_at=completed_at,
                 checksum=digest,
                 output_path=str(output),
+                prompt_revision=prompt_revision,
             )
             counts["completed"] += 1
         except Exception as exc:
@@ -446,6 +613,7 @@ def run_provider_generation(
                 started_at=started_at,
                 completed_at=completed_at,
                 error_message=message,
+                prompt_revision=prompt_revision,
             )
             counts["failed"] += 1
             save_ledger(ledger_path, raw)

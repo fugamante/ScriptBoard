@@ -15,6 +15,9 @@ Recommended integration patterns:
   validation without credentials or network access.
 - Review pending image jobs with `scriptboard plan` and prefer exact
   `scriptboard generate --job-id <job-id>` runs for real provider work.
+- Keep moderation-blocked prompt revisions in an ignored project-local JSON
+  file, then pass it explicitly with `--revisions`. Mark an entry `ready` only
+  after human review; ScriptBoard rejects draft, empty, or stale-hash entries.
 - Keep any legacy wrapper scripts in the screenplay project as thin entrypoints
   that call the installed package or `python3 -m scriptboard`.
 

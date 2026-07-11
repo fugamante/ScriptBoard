@@ -87,6 +87,24 @@ scriptboard plan --status failed
 scriptboard generate --job-id <job-id> --retry-failed
 ```
 
+For moderation-blocked jobs, keep revised prompts in an ignored local revision
+file outside this reusable repository. Review the exact job with the revision
+metadata first:
+
+```bash
+scriptboard plan --job-id <job-id> --retry-failed --revisions Storyboard_Prompt_Revisions.json
+```
+
+A revision is usable only when its status is `ready` and its
+`source_prompt_hash` matches the current job `prompt_hash`. Plan and dry-run
+output shows revision status and hashes, but never prints the original prompt,
+revised prompt, or screenplay passage. When approved, target the exact job:
+
+```bash
+scriptboard generate --dry-run --job-id <job-id> --retry-failed --revisions Storyboard_Prompt_Revisions.json
+scriptboard generate --provider openai --job-id <job-id> --retry-failed --revisions Storyboard_Prompt_Revisions.json
+```
+
 ## Project Configuration
 
 ScriptBoard looks for `ScriptBoard_Config.json` in the active screenplay

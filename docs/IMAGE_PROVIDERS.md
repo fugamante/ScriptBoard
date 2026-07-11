@@ -70,6 +70,39 @@ scriptboard plan --status failed
 scriptboard generate --provider openai --job-id scene_001_panel_001 --retry-failed
 ```
 
+Moderation-blocked jobs should not be retried with the original prompt. Store
+human-reviewed replacements in an ignored local revision file and pass it
+explicitly:
+
+```bash
+scriptboard plan --job-id scene_001_panel_001 --retry-failed --revisions Storyboard_Prompt_Revisions.json
+scriptboard generate --dry-run --job-id scene_001_panel_001 --retry-failed --revisions Storyboard_Prompt_Revisions.json
+```
+
+Revision files use this shape:
+
+```json
+{
+  "schema_version": 1,
+  "revisions": [
+    {
+      "job_id": "scene_001_panel_001",
+      "status": "ready",
+      "source_prompt_hash": "original-job-prompt-hash",
+      "revised_prompt": "local-only revised provider prompt"
+    }
+  ]
+}
+```
+
+ScriptBoard applies a revised prompt only when `status` is `ready`,
+`source_prompt_hash` matches the current ledger `prompt_hash`, and
+`revised_prompt` is non-empty. Sanitized plan and dry-run output show job IDs,
+scene IDs, panel indexes, image paths, selection blockers, source hashes, and
+revision hashes; they omit original prompts, revised prompts, and screenplay
+passages. Provider metadata stores only the revision status plus source and
+revised prompt hashes.
+
 A provider implements:
 
 ```python
@@ -167,6 +200,11 @@ test double for provider work and covers:
 
 The fake provider is not a storyboard-quality renderer; it exists to prove the
 ledger contract before real credentials or paid providers are used.
+
+Revision override tests should use the fake provider first. Required cases are:
+ready revision accepted, draft revision blocked, source-hash mismatch blocked,
+revised prompt omitted from plan output, and revised prompt omitted from the
+persisted ledger.
 
 ## Future Provider Lanes
 

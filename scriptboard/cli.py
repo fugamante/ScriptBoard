@@ -21,6 +21,10 @@ def add_config_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", type=Path, help="Optional ScriptBoard_Config.json path.")
 
 
+def resolve_optional_path(value: Path | None, base: Path) -> Path | None:
+    return resolve_path(value, base) if value else None
+
+
 def run_build(args: argparse.Namespace) -> int:
     input_dir = args.input.expanduser().resolve()
     config = load_config(args.config, base_dir=input_dir)
@@ -79,6 +83,8 @@ def run_generate(args: argparse.Namespace) -> int:
     cwd = Path.cwd()
     config = load_config(args.config, base_dir=cwd)
     jobs_path = resolve_path(args.jobs or Path(config.outputs.image_jobs), cwd)
+    revisions_path = resolve_optional_path(args.revisions, cwd)
+    prompt_revisions = image_providers.load_prompt_revisions(revisions_path)
     if args.dry_run:
         raw = image_providers.load_ledger(jobs_path)
         result = image_providers.generation_plan(
@@ -86,6 +92,7 @@ def run_generate(args: argparse.Namespace) -> int:
             limit=args.limit,
             retry_failed=args.retry_failed,
             job_id=args.job_id,
+            prompt_revisions=prompt_revisions,
         )
         result["provider"] = args.provider
         print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
@@ -105,6 +112,7 @@ def run_generate(args: argparse.Namespace) -> int:
         retry_failed=args.retry_failed,
         stop_on_error=args.stop_on_error,
         job_id=args.job_id,
+        prompt_revisions=prompt_revisions,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
     return 0
@@ -114,6 +122,8 @@ def run_plan(args: argparse.Namespace) -> int:
     cwd = Path.cwd()
     config = load_config(args.config, base_dir=cwd)
     jobs_path = resolve_path(args.jobs or Path(config.outputs.image_jobs), cwd)
+    revisions_path = resolve_optional_path(args.revisions, cwd)
+    prompt_revisions = image_providers.load_prompt_revisions(revisions_path)
     raw = image_providers.load_ledger(jobs_path)
     result = image_providers.review_plan(
         raw,
@@ -121,6 +131,7 @@ def run_plan(args: argparse.Namespace) -> int:
         status=args.status,
         job_id=args.job_id,
         retry_failed=args.retry_failed,
+        prompt_revisions=prompt_revisions,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
     return 0
@@ -178,6 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--status", choices=["pending", "failed", "all"], default="pending")
     plan_parser.add_argument("--job-id", help="Review one exact job ID regardless of status filter.")
     plan_parser.add_argument("--retry-failed", action="store_true", help="Show failed jobs as selectable for retry.")
+    plan_parser.add_argument("--revisions", type=Path, help="Ignored local prompt revision JSON path.")
     plan_parser.set_defaults(func=run_plan)
 
     generate_parser = subparsers.add_parser(
@@ -195,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--job-id", help="Generate or preview one exact job ID.")
     generate_parser.add_argument("--dry-run", action="store_true", help="Preview selected jobs without writing files.")
     generate_parser.add_argument("--retry-failed", action="store_true", help="Retry failed jobs before pending jobs.")
+    generate_parser.add_argument("--revisions", type=Path, help="Ignored local prompt revision JSON path.")
     generate_parser.add_argument("--stop-on-error", action="store_true", help="Exit on the first provider failure.")
     generate_parser.set_defaults(func=run_generate)
 

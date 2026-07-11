@@ -50,6 +50,36 @@ class ScriptBoardTests(unittest.TestCase):
         )
         return ledger_path
 
+    def write_revision_file(
+        self,
+        root: Path,
+        *,
+        job_id: str = "job-1",
+        status: str = "ready",
+        source_prompt_hash: str = "hash-1",
+        revised_prompt: str = "Synthetic revised visual prompt.",
+    ) -> Path:
+        revisions_path = root / "Storyboard_Prompt_Revisions.json"
+        revisions_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "revisions": [
+                        {
+                            "job_id": job_id,
+                            "status": status,
+                            "source_prompt_hash": source_prompt_hash,
+                            "revised_prompt": revised_prompt,
+                        }
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return revisions_path
+
     def test_render_fdx_text_preserves_screenplay_paragraph_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Draft_Test.fdx"
@@ -444,6 +474,99 @@ class ScriptBoardTests(unittest.TestCase):
         self.assertNotIn("Storyboard prompt", failed_stderr.getvalue())
         self.assertNotIn("A test action beat", exact_stderr.getvalue())
 
+    def test_cli_plan_reports_ready_prompt_revision_without_private_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            revised_prompt = "Synthetic revised prompt that should stay local only."
+            revisions_path = self.write_revision_file(root, revised_prompt=revised_prompt)
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "plan",
+                            "--jobs",
+                            str(ledger_path),
+                            "--revisions",
+                            str(revisions_path),
+                            "--job-id",
+                            "job-1",
+                        ]
+                    ),
+                    0,
+                )
+            plan = json.loads(stderr.getvalue())
+            revision = plan["jobs"][0]["revision"]
+
+        self.assertTrue(plan["jobs"][0]["selectable"])
+        self.assertEqual(revision["status"], "ready")
+        self.assertEqual(revision["source_prompt_hash"], "hash-1")
+        self.assertEqual(revision["revised_prompt_hash"], image_providers.prompt_text_hash(revised_prompt))
+        self.assertTrue(revision["applies"])
+        self.assertNotIn("revised_prompt", revision)
+        self.assertNotIn(revised_prompt, stderr.getvalue())
+        self.assertNotIn("Storyboard prompt", stderr.getvalue())
+        self.assertNotIn("A test action beat", stderr.getvalue())
+
+    def test_draft_prompt_revision_blocks_generation_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            revisions_path = self.write_revision_file(
+                root,
+                status="draft",
+                revised_prompt="Synthetic draft prompt.",
+            )
+            revisions = image_providers.load_prompt_revisions(revisions_path)
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+
+            plan = image_providers.review_plan(
+                raw,
+                limit=1,
+                job_id="job-1",
+                prompt_revisions=revisions,
+            )
+            with self.assertRaisesRegex(image_providers.ProviderError, "prompt revision is not ready"):
+                image_providers.run_provider_generation(
+                    ledger_path,
+                    image_providers.FakeImageProvider(),
+                    limit=1,
+                    job_id="job-1",
+                    prompt_revisions=revisions,
+                )
+            after = ledger_path.read_text(encoding="utf-8")
+
+        self.assertFalse(plan["jobs"][0]["selectable"])
+        self.assertIn("prompt revision is not ready", plan["jobs"][0]["blocker"])
+        self.assertNotIn("Synthetic draft prompt.", json.dumps(plan))
+        self.assertIn("\"status\": \"pending\"", after)
+
+    def test_prompt_revision_hash_mismatch_blocks_generation_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            revisions_path = self.write_revision_file(
+                root,
+                source_prompt_hash="different-source-hash",
+                revised_prompt="Synthetic revised prompt.",
+            )
+            revisions = image_providers.load_prompt_revisions(revisions_path)
+
+            with self.assertRaisesRegex(image_providers.ProviderError, "source_prompt_hash"):
+                image_providers.run_provider_generation(
+                    ledger_path,
+                    image_providers.FakeImageProvider(),
+                    limit=1,
+                    job_id="job-1",
+                    prompt_revisions=revisions,
+                )
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(raw["jobs"][0]["status"], "pending")
+        self.assertFalse(Path(raw["jobs"][0]["image_path"]).exists())
+
     def test_cli_generate_dry_run_is_read_only_and_does_not_require_provider_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -479,6 +602,35 @@ class ScriptBoardTests(unittest.TestCase):
         self.assertEqual([job["status"] for job in raw["jobs"]], ["pending", "done"])
         self.assertFalse(first_image_exists)
         self.assertTrue(second_image_exists)
+
+    def test_ready_prompt_revision_feeds_provider_without_persisting_revised_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            revised_prompt = "Synthetic revised provider prompt for one exact job."
+            revised_hash = image_providers.prompt_text_hash(revised_prompt)
+            revisions_path = self.write_revision_file(root, revised_prompt=revised_prompt)
+            revisions = image_providers.load_prompt_revisions(revisions_path)
+
+            result = image_providers.run_provider_generation(
+                ledger_path,
+                image_providers.FakeImageProvider(),
+                limit=1,
+                job_id="job-1",
+                prompt_revisions=revisions,
+            )
+            raw_text = ledger_path.read_text(encoding="utf-8")
+            raw = json.loads(raw_text)
+            job = raw["jobs"][0]
+
+        self.assertEqual(result, {"selected": 1, "completed": 1, "failed": 0})
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["prompt_hash"], "hash-1")
+        self.assertEqual(job["prompt"], "Storyboard prompt 1")
+        self.assertEqual(job["provider"]["request_metadata"]["prompt_hash"], revised_hash)
+        self.assertEqual(job["provider"]["prompt_revision"]["source_prompt_hash"], "hash-1")
+        self.assertEqual(job["provider"]["prompt_revision"]["revised_prompt_hash"], revised_hash)
+        self.assertNotIn(revised_prompt, raw_text)
 
     def test_cli_generate_routes_through_fake_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
