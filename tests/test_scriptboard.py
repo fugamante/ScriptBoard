@@ -12,6 +12,60 @@ from scriptboard import board, builder, cli, image_jobs, image_providers
 from scriptboard.config import load_config
 
 
+class LeakyFailureProvider:
+    name = "leaky"
+    model = "leaky-provider"
+
+    def generate(self, job: dict) -> image_providers.GenerationResult:
+        prompt = str(job.get("prompt") or "")
+        raise image_providers.ProviderError(
+            f"Provider echoed unsafe prompt: {prompt}",
+            error_type=f"type {prompt}",
+            error_code=f"code {prompt}",
+            request_id=f"request {prompt}",
+        )
+
+
+class LeakyMetadataProvider:
+    name = "leaky"
+    model = "leaky-provider"
+
+    def generate(self, job: dict) -> image_providers.GenerationResult:
+        return image_providers.GenerationResult(
+            provider=self.name,
+            model=self.model,
+            image_bytes=image_providers.fake_png("leaky-metadata"),
+            request_metadata={
+                "provider": self.name,
+                "job_id": job.get("id"),
+                "prompt_hash": job.get("prompt"),
+                "model": job.get("prompt"),
+                "size": [job.get("prompt")],
+                "prompt": job.get("prompt"),
+                "api_key": "sk-test-should-not-persist",
+                "signed_url": "https://example.invalid/signed",
+            },
+            provider_job_id="https://example.invalid/signed-provider-job",
+            notes=f"Completed with prompt {job.get('prompt')}",
+        )
+
+
+class UnsafePersistingProvider:
+    name = "unsafe"
+    model = "unsafe-provider"
+
+    def generate(self, job: dict) -> image_providers.GenerationResult:
+        prompt = str(job.get("prompt") or "")
+        raise image_providers.ProviderError(
+            f"Persisted unsafe prompt: {prompt}",
+            error_type=f"type {prompt}",
+            error_code=f"code {prompt}",
+            http_status=f"https://example.invalid/{prompt}",
+            request_id=f"request {prompt}",
+            persist_message=True,
+        )
+
+
 class ScriptBoardTests(unittest.TestCase):
     def write_provider_ledger(self, root: Path, *, count: int = 2) -> Path:
         jobs = []
@@ -543,6 +597,50 @@ class ScriptBoardTests(unittest.TestCase):
         self.assertNotIn("Synthetic draft prompt.", json.dumps(plan))
         self.assertIn("\"status\": \"pending\"", after)
 
+    def test_prompt_revision_schema_is_versioned_and_typed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            revisions_path = root / "Storyboard_Prompt_Revisions.json"
+            revisions_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "revisions": [
+                            {
+                                "job_id": "job-1",
+                                "status": "ready",
+                                "source_prompt_hash": "hash-1",
+                                "revised_prompt": "Synthetic revision.",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(image_providers.ProviderError, "schema_version"):
+                image_providers.load_prompt_revisions(revisions_path)
+
+            revisions_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "revisions": [
+                            {
+                                "job_id": "job-1",
+                                "status": "ready",
+                                "source_prompt_hash": 123,
+                                "revised_prompt": "Synthetic revision.",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(image_providers.ProviderError, "source_prompt_hash"):
+                image_providers.load_prompt_revisions(revisions_path)
+
     def test_prompt_revision_hash_mismatch_blocks_generation_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -566,6 +664,28 @@ class ScriptBoardTests(unittest.TestCase):
 
         self.assertEqual(raw["jobs"][0]["status"], "pending")
         self.assertFalse(Path(raw["jobs"][0]["image_path"]).exists())
+
+    def test_pending_plan_excludes_revision_blocked_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=2)
+            revisions_path = self.write_revision_file(
+                root,
+                status="draft",
+                revised_prompt="Synthetic draft prompt.",
+            )
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+            revisions = image_providers.load_prompt_revisions(revisions_path)
+
+            plan = image_providers.review_plan(
+                raw,
+                limit=5,
+                status="pending",
+                prompt_revisions=revisions,
+            )
+
+        self.assertEqual([job["id"] for job in plan["jobs"]], ["job-2"])
+        self.assertNotIn("Synthetic draft prompt.", json.dumps(plan))
 
     def test_cli_generate_dry_run_is_read_only_and_does_not_require_provider_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -631,6 +751,135 @@ class ScriptBoardTests(unittest.TestCase):
         self.assertEqual(job["provider"]["prompt_revision"]["source_prompt_hash"], "hash-1")
         self.assertEqual(job["provider"]["prompt_revision"]["revised_prompt_hash"], revised_hash)
         self.assertNotIn(revised_prompt, raw_text)
+
+    def test_provider_error_persistence_omits_revised_prompt_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            revised_prompt = "Synthetic revised provider prompt should not persist after failure."
+            revisions_path = self.write_revision_file(root, revised_prompt=revised_prompt)
+            revisions = image_providers.load_prompt_revisions(revisions_path)
+
+            result = image_providers.run_provider_generation(
+                ledger_path,
+                LeakyFailureProvider(),
+                limit=1,
+                job_id="job-1",
+                prompt_revisions=revisions,
+            )
+            raw_text = ledger_path.read_text(encoding="utf-8")
+            raw = json.loads(raw_text)
+            provider = raw["jobs"][0]["provider"]
+
+        self.assertEqual(result, {"selected": 1, "completed": 0, "failed": 1})
+        self.assertEqual(raw["jobs"][0]["notes"], "Provider leaky failed")
+        self.assertEqual(provider["error"], "Provider leaky failed")
+        self.assertEqual(provider["error_type"], "error_type_redacted")
+        self.assertEqual(provider["error_code"], "error_code_redacted")
+        self.assertEqual(provider["request_id"], "request_id_redacted")
+        self.assertNotIn(revised_prompt, raw_text)
+        self.assertNotIn("Provider echoed unsafe prompt", raw_text)
+
+    def test_persisted_provider_error_message_and_http_status_are_sanitized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            revised_prompt = "Synthetic revised provider prompt should not persist from structured errors."
+            revisions_path = self.write_revision_file(root, revised_prompt=revised_prompt)
+            revisions = image_providers.load_prompt_revisions(revisions_path)
+
+            result = image_providers.run_provider_generation(
+                ledger_path,
+                UnsafePersistingProvider(),
+                limit=1,
+                job_id="job-1",
+                prompt_revisions=revisions,
+            )
+            raw_text = ledger_path.read_text(encoding="utf-8")
+            raw = json.loads(raw_text)
+            provider = raw["jobs"][0]["provider"]
+
+        self.assertEqual(result, {"selected": 1, "completed": 0, "failed": 1})
+        self.assertEqual(raw["jobs"][0]["notes"], "message_redacted")
+        self.assertEqual(provider["error"], "message_redacted")
+        self.assertEqual(provider["error_type"], "error_type_redacted")
+        self.assertEqual(provider["error_code"], "error_code_redacted")
+        self.assertEqual(provider["request_id"], "request_id_redacted")
+        self.assertNotIn("http_status", provider)
+        self.assertNotIn(revised_prompt, raw_text)
+        self.assertNotIn("https://example.invalid", raw_text)
+        self.assertNotIn("Persisted unsafe prompt", raw_text)
+
+    def test_provider_request_metadata_is_allowlisted_before_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            revised_prompt = "Synthetic revised provider prompt should not persist as metadata."
+            revisions_path = self.write_revision_file(root, revised_prompt=revised_prompt)
+            revisions = image_providers.load_prompt_revisions(revisions_path)
+
+            result = image_providers.run_provider_generation(
+                ledger_path,
+                LeakyMetadataProvider(),
+                limit=1,
+                job_id="job-1",
+                prompt_revisions=revisions,
+            )
+            raw_text = ledger_path.read_text(encoding="utf-8")
+            raw = json.loads(raw_text)
+            provider = raw["jobs"][0]["provider"]
+
+        self.assertEqual(result, {"selected": 1, "completed": 1, "failed": 0})
+        self.assertEqual(
+            provider["request_metadata"],
+            {
+                "provider": "leaky",
+                "job_id": "job-1",
+                "prompt_hash": "prompt_hash_redacted",
+                "model": "model_redacted",
+                "size": ["size_redacted"],
+            },
+        )
+        self.assertEqual(provider["provider_job_id"], "provider_job_id_redacted")
+        self.assertEqual(provider["notes"], "Provider completed.")
+        self.assertEqual(raw["jobs"][0]["notes"], "Provider completed.")
+        self.assertNotIn(revised_prompt, raw_text)
+        self.assertNotIn("sk-test-should-not-persist", raw_text)
+        self.assertNotIn("signed", raw_text)
+
+    def test_existing_image_after_interruption_is_recovered_without_regeneration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+            image_path = Path(raw["jobs"][0]["image_path"])
+            image_path.parent.mkdir(parents=True)
+            image_bytes = b"existing-image-bytes"
+            image_path.write_bytes(image_bytes)
+            raw["jobs"][0]["status"] = "running"
+            raw["jobs"][0]["provider"] = {
+                "provider": "fake",
+                "model": "fake-image-provider",
+                "status": "running",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "completed_at": None,
+            }
+            ledger_path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+
+            result = image_providers.run_provider_generation(
+                ledger_path,
+                image_providers.FakeImageProvider(),
+                limit=1,
+            )
+            recovered = json.loads(ledger_path.read_text(encoding="utf-8"))
+            provider = recovered["jobs"][0]["provider"]
+            recovered_image_bytes = image_path.read_bytes()
+
+        self.assertEqual(result, {"selected": 0, "completed": 0, "failed": 0})
+        self.assertEqual(recovered["jobs"][0]["status"], "done")
+        self.assertEqual(provider["status"], "done")
+        self.assertEqual(provider["checksum_sha256"], hashlib.sha256(image_bytes).hexdigest())
+        self.assertEqual(recovered_image_bytes, image_bytes)
 
     def test_cli_generate_routes_through_fake_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -20,10 +20,48 @@ DEFAULT_OPENAI_IMAGE_SIZE = "1536x1024"
 DEFAULT_OPENAI_IMAGE_QUALITY = "medium"
 DEFAULT_OPENAI_IMAGE_FORMAT = "png"
 READY_PROMPT_REVISION_STATUS = "ready"
+PROMPT_REVISION_SCHEMA_VERSION = 1
+SAFE_REQUEST_METADATA_KEYS = {
+    "provider",
+    "job_id",
+    "prompt_hash",
+    "model",
+    "n",
+    "size",
+    "quality",
+    "output_format",
+}
+SENSITIVE_TEXT_MARKERS = (
+    "api_key",
+    "authorization",
+    "bearer ",
+    "secret",
+    "signed_url",
+    "sk-",
+    "http://",
+    "https://",
+)
 
 
 class ProviderError(RuntimeError):
     """Raised when a provider cannot produce an image for a panel job."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_type: str | None = None,
+        error_code: str | None = None,
+        http_status: int | None = None,
+        request_id: str | None = None,
+        persist_message: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.error_code = error_code
+        self.http_status = http_status
+        self.request_id = request_id
+        self.persist_message = persist_message
 
 
 @dataclass(frozen=True)
@@ -53,6 +91,108 @@ def utc_now() -> str:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def safe_scalar(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)) and all(item is None or isinstance(item, (str, int, float, bool)) for item in value):
+        return list(value)
+    return None
+
+
+def sanitize_metadata_value(value: Any, *, sensitive_values: list[str], fallback: str) -> Any:
+    if isinstance(value, str):
+        return safe_provider_text(value, sensitive_values=sensitive_values, fallback=fallback)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        safe_items = []
+        for item in value:
+            if isinstance(item, str):
+                safe_items.append(safe_provider_text(item, sensitive_values=sensitive_values, fallback=fallback))
+            elif isinstance(item, (int, float, bool)) or item is None:
+                safe_items.append(item)
+            else:
+                return None
+        return safe_items
+    return None
+
+
+def sanitize_request_metadata(metadata: dict[str, Any], *, sensitive_values: list[str]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in metadata.items():
+        key_text = str(key)
+        if key_text not in SAFE_REQUEST_METADATA_KEYS:
+            continue
+        if safe_scalar(value) is None:
+            continue
+        safe_value = sanitize_metadata_value(
+            value,
+            sensitive_values=sensitive_values,
+            fallback=f"{key_text}_redacted",
+        )
+        if safe_value is not None:
+            safe[key_text] = safe_value
+    return safe
+
+
+def sensitive_values_for_job(*jobs: dict[str, Any]) -> list[str]:
+    values = []
+    for job in jobs:
+        for key in ("prompt", "script_passage"):
+            value = str(job.get(key) or "").strip()
+            if len(value) >= 16:
+                values.append(value)
+    return values
+
+
+def safe_provider_text(value: Any, *, sensitive_values: list[str], fallback: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lower = text.lower()
+    if any(marker in lower for marker in SENSITIVE_TEXT_MARKERS):
+        return fallback
+    if any(secret and secret in text for secret in sensitive_values):
+        return fallback
+    return text
+
+
+def provider_error_details(provider: ImageProvider, exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, ProviderError):
+        details: dict[str, Any] = {
+            "message": str(exc) if exc.persist_message else f"Provider {provider.name} failed",
+            "error_type": exc.error_type or exc.__class__.__name__,
+        }
+        if exc.error_code:
+            details["error_code"] = exc.error_code
+        if exc.http_status:
+            details["http_status"] = exc.http_status
+        if exc.request_id:
+            details["request_id"] = exc.request_id
+        return details
+    return {
+        "message": f"Provider {provider.name} failed",
+        "error_type": exc.__class__.__name__,
+    }
+
+
+def sanitize_error_details(details: dict[str, Any], *, sensitive_values: list[str]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key in ("message", "error_type", "error_code", "request_id"):
+        value = details.get(key)
+        if value:
+            safe[key] = safe_provider_text(
+                value,
+                sensitive_values=sensitive_values,
+                fallback=f"{key}_redacted",
+            )
+    if details.get("http_status"):
+        http_status = details["http_status"]
+        if type(http_status) is int:
+            safe["http_status"] = http_status
+    return safe
 
 
 def prompt_text_hash(prompt: str) -> str:
@@ -144,7 +284,7 @@ class OpenAIImageProvider:
 
     def generate(self, job: dict[str, Any]) -> GenerationResult:
         if not self.api_key:
-            raise ProviderError("OPENAI_API_KEY is required for provider 'openai'")
+            raise ProviderError("OPENAI_API_KEY is required for provider 'openai'", persist_message=True)
         payload = self.request_payload(job)
         request_metadata = {key: value for key, value in payload.items() if key != "prompt"}
         request_metadata["prompt_hash"] = str(job.get("prompt_hash") or sha256_bytes(payload["prompt"].encode("utf-8")))
@@ -163,13 +303,44 @@ class OpenAIImageProvider:
                 request_id = response.headers.get("x-request-id")
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise ProviderError(f"OpenAI Image API failed with HTTP {exc.code}: {detail}") from exc
+            error_type = None
+            error_code = None
+            try:
+                error_payload = json.loads(detail).get("error") or {}
+                error_type = safe_provider_text(
+                    error_payload.get("type"),
+                    sensitive_values=[],
+                    fallback="provider_error",
+                )
+                error_code = safe_provider_text(
+                    error_payload.get("code"),
+                    sensitive_values=[],
+                    fallback="provider_error",
+                )
+            except (json.JSONDecodeError, AttributeError):
+                pass
+            suffix = f": {error_code or error_type}" if error_code or error_type else ""
+            raise ProviderError(
+                f"OpenAI Image API failed with HTTP {exc.code}{suffix}",
+                error_type=error_type or "http_error",
+                error_code=error_code or None,
+                http_status=exc.code,
+                request_id=exc.headers.get("x-request-id") if exc.headers else None,
+                persist_message=True,
+            ) from exc
         except error.URLError as exc:
-            raise ProviderError(f"OpenAI Image API request failed: {exc}") from exc
+            raise ProviderError(
+                "OpenAI Image API request failed",
+                error_type="network_error",
+                persist_message=True,
+            ) from exc
         try:
             encoded = body["data"][0]["b64_json"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise ProviderError("OpenAI Image API response did not include data[0].b64_json") from exc
+            raise ProviderError(
+                "OpenAI Image API response did not include data[0].b64_json",
+                persist_message=True,
+            ) from exc
         return GenerationResult(
             provider=self.name,
             model=self.model,
@@ -209,6 +380,10 @@ def load_prompt_revisions(revisions_path: Path | None) -> dict[str, dict[str, An
     if revisions_path is None:
         return {}
     raw = json.loads(revisions_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ProviderError("Prompt revision file must be a JSON object")
+    if raw.get("schema_version") != PROMPT_REVISION_SCHEMA_VERSION:
+        raise ProviderError(f"Prompt revision schema_version must be {PROMPT_REVISION_SCHEMA_VERSION}")
     entries = raw.get("revisions", [])
     if not isinstance(entries, list):
         raise ProviderError("Prompt revision file must contain a revisions list")
@@ -217,9 +392,16 @@ def load_prompt_revisions(revisions_path: Path | None) -> dict[str, dict[str, An
     for index, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict):
             raise ProviderError(f"Prompt revision entry {index} must be an object")
-        job_id = str(entry.get("job_id") or "").strip()
+        for field in ("job_id", "status", "source_prompt_hash", "revised_prompt"):
+            if field not in entry or not isinstance(entry[field], str):
+                raise ProviderError(f"Prompt revision entry {index} must include string field {field}")
+        job_id = entry["job_id"].strip()
         if not job_id:
             raise ProviderError(f"Prompt revision entry {index} is missing job_id")
+        if not entry["status"].strip():
+            raise ProviderError(f"Prompt revision entry {index} is missing status")
+        if not entry["source_prompt_hash"].strip():
+            raise ProviderError(f"Prompt revision entry {index} is missing source_prompt_hash")
         if job_id in revisions:
             raise ProviderError(f"Duplicate prompt revision for job_id {job_id}")
         revisions[job_id] = entry
@@ -230,6 +412,30 @@ def save_ledger(ledger_path: Path, raw: dict[str, Any]) -> None:
     refresh_summary(raw)
     raw["generated_at"] = utc_now()
     ledger_path.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def recover_existing_outputs(raw: dict[str, Any]) -> int:
+    recovered = 0
+    for job in raw.get("jobs", []):
+        image_path = job_image_path(job)
+        if job.get("status") == "done" or not image_path.exists():
+            continue
+        image_bytes = image_path.read_bytes()
+        completed_at = utc_now()
+        job["status"] = "done"
+        job["output_path"] = str(image_path)
+        job["updated_at"] = completed_at
+        job["notes"] = "Recovered existing image output without regenerating."
+        provider = dict(job.get("provider") or {})
+        provider.setdefault("provider", "recovered")
+        provider.setdefault("model", None)
+        provider["status"] = "done"
+        provider["completed_at"] = completed_at
+        provider["checksum_sha256"] = sha256_bytes(image_bytes)
+        provider["output_path"] = str(image_path)
+        job["provider"] = provider
+        recovered += 1
+    return recovered
 
 
 def refresh_summary(raw: dict[str, Any]) -> None:
@@ -476,7 +682,12 @@ def review_plan(
         for job in raw.get("jobs", []):
             job_status = str(job.get("status") or "")
             if status == "pending" and (
-                job_status == "failed" or job_selection_blocker(job, retry_failed=False)
+                job_status == "failed"
+                or job_selection_blocker(
+                    job,
+                    retry_failed=False,
+                    prompt_revisions=prompt_revisions,
+                )
             ):
                 continue
             if status == "failed" and job_status != "failed":
@@ -511,8 +722,9 @@ def provider_metadata(
     completed_at: str | None = None,
     checksum: str | None = None,
     output_path: str | None = None,
-    error_message: str | None = None,
+    error_details: dict[str, Any] | None = None,
     prompt_revision: dict[str, Any] | None = None,
+    sensitive_values: list[str] | None = None,
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "provider": provider.name,
@@ -522,22 +734,45 @@ def provider_metadata(
         "completed_at": completed_at,
     }
     if result:
+        sensitive_values = sensitive_values or []
+        provider_job_id = safe_provider_text(
+            result.provider_job_id,
+            sensitive_values=sensitive_values,
+            fallback="provider_job_id_redacted",
+        )
+        notes = safe_provider_text(
+            result.notes,
+            sensitive_values=sensitive_values,
+            fallback="Provider completed.",
+        )
+        cost_estimate = safe_provider_text(
+            result.cost_estimate,
+            sensitive_values=sensitive_values,
+            fallback="",
+        )
         metadata.update(
             {
-                "provider_job_id": result.provider_job_id,
-                "request_metadata": result.request_metadata,
+                "provider_job_id": provider_job_id or None,
+                "request_metadata": sanitize_request_metadata(
+                    result.request_metadata,
+                    sensitive_values=sensitive_values,
+                ),
                 "output_format": result.output_format,
                 "seed": result.seed,
-                "cost_estimate": result.cost_estimate,
-                "notes": result.notes,
+                "cost_estimate": cost_estimate or None,
+                "notes": notes,
             }
         )
     if checksum:
         metadata["checksum_sha256"] = checksum
     if output_path:
         metadata["output_path"] = output_path
-    if error_message:
-        metadata["error"] = error_message
+    if error_details:
+        error_details = sanitize_error_details(error_details, sensitive_values=sensitive_values or [])
+        metadata["error"] = error_details.get("message")
+        for key in ("error_type", "error_code", "http_status", "request_id"):
+            if error_details.get(key):
+                metadata[key] = error_details[key]
     if prompt_revision:
         metadata["prompt_revision"] = prompt_revision
     return metadata
@@ -554,6 +789,8 @@ def run_provider_generation(
     prompt_revisions: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     raw = load_ledger(ledger_path)
+    if recover_existing_outputs(raw):
+        save_ledger(ledger_path, raw)
     selected = selected_jobs(
         raw,
         limit=limit,
@@ -568,6 +805,7 @@ def run_provider_generation(
             job,
             prompt_revisions=prompt_revisions,
         )
+        sensitive_values = sensitive_values_for_job(job, provider_job)
         job["status"] = "running"
         job["updated_at"] = started_at
         job["provider"] = provider_metadata(
@@ -576,6 +814,7 @@ def run_provider_generation(
             status="running",
             started_at=started_at,
             prompt_revision=prompt_revision,
+            sensitive_values=sensitive_values,
         )
         save_ledger(ledger_path, raw)
         try:
@@ -588,7 +827,11 @@ def run_provider_generation(
             job["status"] = "done"
             job["output_path"] = str(output)
             job["updated_at"] = completed_at
-            job["notes"] = result.notes
+            job["notes"] = safe_provider_text(
+                result.notes,
+                sensitive_values=sensitive_values,
+                fallback="Provider completed.",
+            )
             job["provider"] = provider_metadata(
                 provider=provider,
                 result=result,
@@ -598,11 +841,14 @@ def run_provider_generation(
                 checksum=digest,
                 output_path=str(output),
                 prompt_revision=prompt_revision,
+                sensitive_values=sensitive_values,
             )
             counts["completed"] += 1
         except Exception as exc:
             completed_at = utc_now()
-            message = str(exc)
+            details = provider_error_details(provider, exc)
+            safe_details = sanitize_error_details(details, sensitive_values=sensitive_values)
+            message = str(safe_details.get("message") or f"Provider {provider.name} failed")
             job["status"] = "failed"
             job["updated_at"] = completed_at
             job["notes"] = message
@@ -612,8 +858,9 @@ def run_provider_generation(
                 status="failed",
                 started_at=started_at,
                 completed_at=completed_at,
-                error_message=message,
+                error_details=safe_details,
                 prompt_revision=prompt_revision,
+                sensitive_values=sensitive_values,
             )
             counts["failed"] += 1
             save_ledger(ledger_path, raw)

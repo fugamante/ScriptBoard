@@ -18,6 +18,8 @@ Recommended integration patterns:
 - Keep moderation-blocked prompt revisions in an ignored project-local JSON
   file, then pass it explicitly with `--revisions`. Mark an entry `ready` only
   after human review; ScriptBoard rejects draft, empty, or stale-hash entries.
+- Treat `Storyboard_Prompt_Revisions*.json` as private operator state; it may
+  contain revised prompt text and belongs outside published artifacts.
 - Keep any legacy wrapper scripts in the screenplay project as thin entrypoints
   that call the installed package or `python3 -m scriptboard`.
 

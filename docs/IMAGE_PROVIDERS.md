@@ -118,6 +118,11 @@ class ImageProvider(Protocol):
 not return API keys, browser auth state, signed URLs, or another copy of private
 prompt text.
 
+ScriptBoard persists only an allowlisted subset of provider request metadata:
+`provider`, `job_id`, `prompt_hash`, `model`, `n`, `size`, `quality`, and
+`output_format`. Other provider-supplied metadata is dropped before the ledger
+is written.
+
 Plan and dry-run job previews are sanitized. They expose job IDs, scene IDs, panel
 indexes, prompt hashes, image paths, image-existence state, and provider status;
 they omit `prompt` and `script_passage`.
@@ -154,8 +159,14 @@ metadata under `job.provider`:
 ```
 
 Failure metadata uses the same envelope with `status: "failed"` and an `error`
-message. An interrupted run may leave a job `running`; the next run treats a
-missing image file as resumable work and attempts the job again.
+message. Raw provider error bodies are not persisted because they may echo
+prompt text. Safe error metadata may include provider error type, provider error
+code, HTTP status, and request ID.
+
+An interrupted run may leave a job `running`; the next run treats a missing
+image file as resumable work and attempts the job again. If the image file
+already exists after an interruption, ScriptBoard reconciles the ledger to
+`done`, records the local checksum, and does not regenerate the image.
 
 The ledger summary now supports:
 
@@ -204,7 +215,9 @@ ledger contract before real credentials or paid providers are used.
 Revision override tests should use the fake provider first. Required cases are:
 ready revision accepted, draft revision blocked, source-hash mismatch blocked,
 revised prompt omitted from plan output, and revised prompt omitted from the
-persisted ledger.
+persisted ledger. Revision files are schema-gated with `schema_version: 1`; each
+entry must include string `job_id`, `status`, `source_prompt_hash`, and
+`revised_prompt` fields.
 
 ## Future Provider Lanes
 

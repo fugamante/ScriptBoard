@@ -15,5 +15,7 @@ Storyboard_Image_Jobs.json
 Storyboard_Panel_Catalog.md
 Storyboard_Board.html
 Storyboard_Annotations.json
+Storyboard_Prompt_Revisions*.json
 Storyboard_Erased_Panels.json
 Storyboard_Images/
+storyboard_annotation_*.json

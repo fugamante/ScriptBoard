@@ -170,4 +170,6 @@ python3 -m py_compile scriptboard/*.py storyboard_tool/*.py
 
 This repository should contain only reusable tooling and synthetic fixtures.
 Screenplay drafts, private generated images, project research, and project
-story bibles belong in the screenplay project that consumes ScriptBoard.
+story bibles belong in the screenplay project that consumes ScriptBoard. Local
+prompt revision files such as `Storyboard_Prompt_Revisions.json` are ignored
+because they may contain private revised prompts.
