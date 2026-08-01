@@ -92,12 +92,17 @@ file outside this reusable repository. Review the exact job with the revision
 metadata first:
 
 ```bash
+scriptboard revisions scaffold --job-id <job-id> --revisions Storyboard_Prompt_Revisions.json
+scriptboard revisions validate --job-id <job-id> --revisions Storyboard_Prompt_Revisions.json --strict
 scriptboard plan --job-id <job-id> --retry-failed --revisions Storyboard_Prompt_Revisions.json
 ```
 
 A revision is usable only when its status is `ready` and its
-`source_prompt_hash` matches the current job `prompt_hash`. Plan and dry-run
-output shows revision status and hashes, but never prints the original prompt,
+`source_prompt_hash` matches the current job `prompt_hash`. `revisions scaffold`
+creates or updates the ignored JSON entry from the current ledger hash; pass
+`--revised-prompt-file <path>` and `--status ready` only after writing a
+human-reviewed prompt to a local text file. Revision helper, plan, and dry-run
+output show revision status and hashes, but never print the original prompt,
 revised prompt, or screenplay passage. When approved, target the exact job:
 
 ```bash
@@ -139,6 +144,7 @@ Config areas:
 scriptboard build
 scriptboard jobs
 scriptboard plan
+scriptboard revisions
 scriptboard generate
 scriptboard board
 scriptboard cleanup

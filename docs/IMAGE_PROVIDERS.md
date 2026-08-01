@@ -75,6 +75,8 @@ human-reviewed replacements in an ignored local revision file and pass it
 explicitly:
 
 ```bash
+scriptboard revisions scaffold --job-id scene_001_panel_001 --revisions Storyboard_Prompt_Revisions.json
+scriptboard revisions validate --job-id scene_001_panel_001 --revisions Storyboard_Prompt_Revisions.json --strict
 scriptboard plan --job-id scene_001_panel_001 --retry-failed --revisions Storyboard_Prompt_Revisions.json
 scriptboard generate --dry-run --job-id scene_001_panel_001 --retry-failed --revisions Storyboard_Prompt_Revisions.json
 ```
@@ -97,11 +99,16 @@ Revision files use this shape:
 
 ScriptBoard applies a revised prompt only when `status` is `ready`,
 `source_prompt_hash` matches the current ledger `prompt_hash`, and
-`revised_prompt` is non-empty. Sanitized plan and dry-run output show job IDs,
-scene IDs, panel indexes, image paths, selection blockers, source hashes, and
-revision hashes; they omit original prompts, revised prompts, and screenplay
-passages. Provider metadata stores only the revision status plus source and
-revised prompt hashes.
+`revised_prompt` is non-empty. Use `scriptboard revisions scaffold` to create a
+draft entry from the current ledger hash. Use `--revised-prompt-file <path>` and
+`--status ready` only when a local, human-reviewed prompt is ready to store in
+the ignored JSON file. Use `scriptboard revisions validate --strict` to catch
+draft, stale-hash, missing-job, and empty-ready entries before real generation.
+Sanitized revision helper, plan, and dry-run output show job IDs, scene IDs,
+panel indexes, image paths, selection blockers, source hashes, and revision
+hashes; they omit original prompts, revised prompts, and screenplay passages.
+Provider metadata stores only the revision status plus source and revised prompt
+hashes.
 
 A provider implements:
 

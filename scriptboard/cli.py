@@ -137,6 +137,44 @@ def run_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def read_revised_prompt(args: argparse.Namespace, cwd: Path) -> str | None:
+    if not args.revised_prompt_file:
+        return None
+    prompt_path = resolve_path(args.revised_prompt_file, cwd)
+    return prompt_path.read_text(encoding="utf-8")
+
+
+def run_revisions_scaffold(args: argparse.Namespace) -> int:
+    cwd = Path.cwd()
+    config = load_config(args.config, base_dir=cwd)
+    jobs_path = resolve_path(args.jobs or Path(config.outputs.image_jobs), cwd)
+    revisions_path = resolve_path(args.revisions, cwd)
+    result = image_providers.scaffold_prompt_revision(
+        jobs_path,
+        revisions_path,
+        job_id=args.job_id,
+        status=args.status,
+        revised_prompt=read_revised_prompt(args, cwd),
+        replace=args.replace,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
+    return 0
+
+
+def run_revisions_validate(args: argparse.Namespace) -> int:
+    cwd = Path.cwd()
+    config = load_config(args.config, base_dir=cwd)
+    jobs_path = resolve_path(args.jobs or Path(config.outputs.image_jobs), cwd)
+    revisions_path = resolve_path(args.revisions, cwd)
+    result = image_providers.validate_prompt_revision_file(
+        jobs_path,
+        revisions_path,
+        job_id=args.job_id,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
+    return 1 if args.strict and result["summary"]["blocked"] else 0
+
+
 def run_inspect_visible_images(args: argparse.Namespace) -> int:
     cwd = Path.cwd()
     config = load_config(args.config, base_dir=cwd)
@@ -191,6 +229,58 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--retry-failed", action="store_true", help="Show failed jobs as selectable for retry.")
     plan_parser.add_argument("--revisions", type=Path, help="Ignored local prompt revision JSON path.")
     plan_parser.set_defaults(func=run_plan)
+
+    revisions_parser = subparsers.add_parser(
+        "revisions",
+        help="Scaffold and validate ignored local prompt revision files.",
+    )
+    revisions_subparsers = revisions_parser.add_subparsers(dest="revision_command", required=True)
+
+    revisions_scaffold_parser = revisions_subparsers.add_parser(
+        "scaffold",
+        help="Create or update one local prompt revision entry without printing prompt text.",
+    )
+    add_config_arg(revisions_scaffold_parser)
+    revisions_scaffold_parser.add_argument("--jobs", type=Path, help="Storyboard image-job ledger path.")
+    revisions_scaffold_parser.add_argument(
+        "--revisions",
+        type=Path,
+        required=True,
+        help="Ignored local revision JSON path.",
+    )
+    revisions_scaffold_parser.add_argument("--job-id", required=True, help="Exact job ID to scaffold.")
+    revisions_scaffold_parser.add_argument("--status", choices=["draft", "ready"], help="Revision status to write.")
+    revisions_scaffold_parser.add_argument(
+        "--revised-prompt-file",
+        type=Path,
+        help="Local text file containing the revised prompt. Contents are written but never printed.",
+    )
+    revisions_scaffold_parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Replace an existing entry for the job ID.",
+    )
+    revisions_scaffold_parser.set_defaults(func=run_revisions_scaffold)
+
+    revisions_validate_parser = revisions_subparsers.add_parser(
+        "validate",
+        help="Validate a local prompt revision file against the current job ledger.",
+    )
+    add_config_arg(revisions_validate_parser)
+    revisions_validate_parser.add_argument("--jobs", type=Path, help="Storyboard image-job ledger path.")
+    revisions_validate_parser.add_argument(
+        "--revisions",
+        type=Path,
+        required=True,
+        help="Ignored local revision JSON path.",
+    )
+    revisions_validate_parser.add_argument("--job-id", help="Validate one exact revision entry.")
+    revisions_validate_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit 1 when any selected revision is blocked.",
+    )
+    revisions_validate_parser.set_defaults(func=run_revisions_validate)
 
     generate_parser = subparsers.add_parser(
         "generate",

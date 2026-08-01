@@ -376,10 +376,7 @@ def load_ledger(ledger_path: Path) -> dict[str, Any]:
     return json.loads(ledger_path.read_text(encoding="utf-8"))
 
 
-def load_prompt_revisions(revisions_path: Path | None) -> dict[str, dict[str, Any]]:
-    if revisions_path is None:
-        return {}
-    raw = json.loads(revisions_path.read_text(encoding="utf-8"))
+def prompt_revision_entries(raw: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw, dict):
         raise ProviderError("Prompt revision file must be a JSON object")
     if raw.get("schema_version") != PROMPT_REVISION_SCHEMA_VERSION:
@@ -405,6 +402,17 @@ def load_prompt_revisions(revisions_path: Path | None) -> dict[str, dict[str, An
         if job_id in revisions:
             raise ProviderError(f"Duplicate prompt revision for job_id {job_id}")
         revisions[job_id] = entry
+    return entries
+
+
+def load_prompt_revisions(revisions_path: Path | None) -> dict[str, dict[str, Any]]:
+    if revisions_path is None:
+        return {}
+    raw = json.loads(revisions_path.read_text(encoding="utf-8"))
+    entries = prompt_revision_entries(raw)
+    revisions: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        revisions[entry["job_id"].strip()] = entry
     return revisions
 
 
@@ -501,6 +509,144 @@ def prompt_revision_metadata(review: dict[str, Any] | None) -> dict[str, Any] | 
         "status": review.get("status"),
         "source_prompt_hash": review.get("source_prompt_hash"),
         "revised_prompt_hash": review.get("revised_prompt_hash"),
+    }
+
+
+def find_job(raw: dict[str, Any], job_id: str) -> dict[str, Any]:
+    for job in raw.get("jobs", []):
+        if job.get("id") == job_id:
+            return job
+    raise ProviderError(f"Job id not found: {job_id}")
+
+
+def prompt_revision_document(revisions_path: Path, *, allow_missing: bool = False) -> dict[str, Any]:
+    if not revisions_path.exists():
+        if allow_missing:
+            return {"schema_version": PROMPT_REVISION_SCHEMA_VERSION, "revisions": []}
+        raise ProviderError(f"Prompt revision file not found: {revisions_path}")
+    raw = json.loads(revisions_path.read_text(encoding="utf-8"))
+    prompt_revision_entries(raw)
+    return raw
+
+
+def save_prompt_revision_document(revisions_path: Path, raw: dict[str, Any]) -> None:
+    prompt_revision_entries(raw)
+    revisions_path.parent.mkdir(parents=True, exist_ok=True)
+    revisions_path.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def revision_review_item(
+    job: dict[str, Any],
+    revision: dict[str, Any],
+) -> dict[str, Any]:
+    review = prompt_revision_review(job, prompt_revisions={str(job.get("id") or ""): revision})
+    image_path = job_image_path(job)
+    return {
+        "job_id": job.get("id"),
+        "status": revision.get("status"),
+        "source_prompt_hash": revision.get("source_prompt_hash"),
+        "current_prompt_hash": job.get("prompt_hash"),
+        "revised_prompt_hash": review.get("revised_prompt_hash") if review else None,
+        "applies": bool(review and review.get("applies")),
+        "blocker": review.get("blocker") if review else None,
+        "image_path": str(image_path),
+        "image_exists": image_path.exists(),
+    }
+
+
+def scaffold_prompt_revision(
+    ledger_path: Path,
+    revisions_path: Path,
+    *,
+    job_id: str,
+    status: str | None = None,
+    revised_prompt: str | None = None,
+    replace: bool = False,
+) -> dict[str, Any]:
+    raw = load_ledger(ledger_path)
+    job = find_job(raw, job_id)
+    document = prompt_revision_document(revisions_path, allow_missing=True)
+    entries = document["revisions"]
+    existing_index = None
+    for index, entry in enumerate(entries):
+        if entry.get("job_id") == job_id:
+            existing_index = index
+            break
+    if existing_index is not None and not replace:
+        raise ProviderError(f"Prompt revision already exists for job_id {job_id}; pass --replace to update it")
+
+    existing = entries[existing_index] if existing_index is not None else {}
+    next_status = status or str(existing.get("status") or "draft")
+    next_prompt = revised_prompt if revised_prompt is not None else str(existing.get("revised_prompt") or "")
+    if next_status == READY_PROMPT_REVISION_STATUS and not next_prompt.strip():
+        raise ProviderError("Ready prompt revisions require a non-empty --revised-prompt-file")
+
+    revision = {
+        "job_id": job_id,
+        "status": next_status,
+        "source_prompt_hash": str(job.get("prompt_hash") or ""),
+        "revised_prompt": next_prompt,
+    }
+    if existing_index is None:
+        entries.append(revision)
+        action = "created"
+    else:
+        entries[existing_index] = revision
+        action = "updated"
+    save_prompt_revision_document(revisions_path, document)
+    item = revision_review_item(job, revision)
+    return {
+        "action": action,
+        "revision": item,
+    }
+
+
+def validate_prompt_revision_file(
+    ledger_path: Path,
+    revisions_path: Path,
+    *,
+    job_id: str | None = None,
+) -> dict[str, Any]:
+    raw = load_ledger(ledger_path)
+    document = prompt_revision_document(revisions_path)
+    entries = prompt_revision_entries(document)
+    jobs_by_id = {str(job.get("id") or ""): job for job in raw.get("jobs", [])}
+    revisions = []
+    for entry in entries:
+        entry_job_id = entry["job_id"].strip()
+        if job_id and entry_job_id != job_id:
+            continue
+        job = jobs_by_id.get(entry_job_id)
+        if not job:
+            revisions.append(
+                {
+                    "job_id": entry_job_id,
+                    "status": entry.get("status"),
+                    "source_prompt_hash": entry.get("source_prompt_hash"),
+                    "current_prompt_hash": None,
+                    "revised_prompt_hash": None,
+                    "applies": False,
+                    "blocker": "job id is not present in ledger",
+                    "image_path": None,
+                    "image_exists": False,
+                }
+            )
+            continue
+        revisions.append(revision_review_item(job, entry))
+    if job_id and not revisions:
+        raise ProviderError(f"Prompt revision not found for job_id {job_id}")
+    summary = {
+        "total": len(revisions),
+        "ready": sum(1 for item in revisions if item.get("status") == READY_PROMPT_REVISION_STATUS),
+        "draft": sum(1 for item in revisions if item.get("status") == "draft"),
+        "applies": sum(1 for item in revisions if item.get("applies")),
+        "blocked": sum(1 for item in revisions if item.get("blocker")),
+        "missing_job": sum(1 for item in revisions if item.get("blocker") == "job id is not present in ledger"),
+    }
+    return {
+        "schema_version": PROMPT_REVISION_SCHEMA_VERSION,
+        "summary": summary,
+        "revisions": revisions,
     }
 
 

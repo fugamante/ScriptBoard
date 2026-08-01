@@ -564,6 +564,161 @@ class ScriptBoardTests(unittest.TestCase):
         self.assertNotIn("Storyboard prompt", stderr.getvalue())
         self.assertNotIn("A test action beat", stderr.getvalue())
 
+    def test_cli_revisions_scaffold_ready_entry_without_printing_prompt_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            revisions_path = root / "Storyboard_Prompt_Revisions.json"
+            private_prompt = "Synthetic local prompt body that must not print."
+            prompt_path = root / "private_prompt.txt"
+            prompt_path.write_text(private_prompt, encoding="utf-8")
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "revisions",
+                            "scaffold",
+                            "--jobs",
+                            str(ledger_path),
+                            "--revisions",
+                            str(revisions_path),
+                            "--job-id",
+                            "job-1",
+                            "--status",
+                            "ready",
+                            "--revised-prompt-file",
+                            str(prompt_path),
+                        ]
+                    ),
+                    0,
+                )
+            result = json.loads(stderr.getvalue())
+            raw = json.loads(revisions_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["action"], "created")
+        self.assertEqual(result["revision"]["job_id"], "job-1")
+        self.assertEqual(result["revision"]["status"], "ready")
+        self.assertEqual(result["revision"]["source_prompt_hash"], "hash-1")
+        self.assertEqual(
+            result["revision"]["revised_prompt_hash"],
+            image_providers.prompt_text_hash(private_prompt),
+        )
+        self.assertEqual(raw["revisions"][0]["revised_prompt"], private_prompt)
+        self.assertNotIn(private_prompt, stderr.getvalue())
+        self.assertNotIn("Storyboard prompt", stderr.getvalue())
+        self.assertNotIn("A test action beat", stderr.getvalue())
+
+    def test_cli_revisions_validate_ready_entry_without_private_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            private_prompt = "Synthetic revised prompt that validation must not print."
+            revisions_path = self.write_revision_file(root, revised_prompt=private_prompt)
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "revisions",
+                            "validate",
+                            "--jobs",
+                            str(ledger_path),
+                            "--revisions",
+                            str(revisions_path),
+                            "--job-id",
+                            "job-1",
+                            "--strict",
+                        ]
+                    ),
+                    0,
+                )
+            result = json.loads(stderr.getvalue())
+            item = result["revisions"][0]
+
+        self.assertEqual(result["summary"]["ready"], 1)
+        self.assertEqual(result["summary"]["blocked"], 0)
+        self.assertTrue(item["applies"])
+        self.assertEqual(item["revised_prompt_hash"], image_providers.prompt_text_hash(private_prompt))
+        self.assertNotIn(private_prompt, stderr.getvalue())
+        self.assertNotIn("Storyboard prompt", stderr.getvalue())
+        self.assertNotIn("A test action beat", stderr.getvalue())
+
+    def test_cli_revisions_validate_draft_entry_blocks_strict_without_private_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            private_prompt = "Synthetic draft prompt that validation must not print."
+            revisions_path = self.write_revision_file(
+                root,
+                status="draft",
+                revised_prompt=private_prompt,
+            )
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                code = cli.main(
+                    [
+                        "revisions",
+                        "validate",
+                        "--jobs",
+                        str(ledger_path),
+                        "--revisions",
+                        str(revisions_path),
+                        "--strict",
+                    ]
+                )
+            result = json.loads(stderr.getvalue())
+            item = result["revisions"][0]
+
+        self.assertEqual(code, 1)
+        self.assertEqual(result["summary"]["draft"], 1)
+        self.assertEqual(result["summary"]["blocked"], 1)
+        self.assertEqual(item["blocker"], "prompt revision is not ready")
+        self.assertNotIn(private_prompt, stderr.getvalue())
+        self.assertNotIn("Storyboard prompt", stderr.getvalue())
+        self.assertNotIn("A test action beat", stderr.getvalue())
+
+    def test_cli_revisions_validate_hash_mismatch_without_private_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            private_prompt = "Synthetic mismatched prompt that validation must not print."
+            revisions_path = self.write_revision_file(
+                root,
+                source_prompt_hash="stale-source-hash",
+                revised_prompt=private_prompt,
+            )
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                code = cli.main(
+                    [
+                        "revisions",
+                        "validate",
+                        "--jobs",
+                        str(ledger_path),
+                        "--revisions",
+                        str(revisions_path),
+                        "--strict",
+                    ]
+                )
+            result = json.loads(stderr.getvalue())
+            item = result["revisions"][0]
+
+        self.assertEqual(code, 1)
+        self.assertEqual(result["summary"]["blocked"], 1)
+        self.assertEqual(
+            item["blocker"],
+            "prompt revision source_prompt_hash does not match job prompt_hash",
+        )
+        self.assertEqual(item["current_prompt_hash"], "hash-1")
+        self.assertNotIn(private_prompt, stderr.getvalue())
+        self.assertNotIn("Storyboard prompt", stderr.getvalue())
+        self.assertNotIn("A test action beat", stderr.getvalue())
+
     def test_draft_prompt_revision_blocks_generation_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -18,6 +18,10 @@ Recommended integration patterns:
 - Keep moderation-blocked prompt revisions in an ignored project-local JSON
   file, then pass it explicitly with `--revisions`. Mark an entry `ready` only
   after human review; ScriptBoard rejects draft, empty, or stale-hash entries.
+- Use `scriptboard revisions scaffold --job-id <job-id> --revisions <path>` to
+  create an ignored draft entry from the current ledger hash, and
+  `scriptboard revisions validate --revisions <path> --strict` before retrying
+  real generation.
 - Treat `Storyboard_Prompt_Revisions*.json` as private operator state; it may
   contain revised prompt text and belongs outside published artifacts.
 - Keep any legacy wrapper scripts in the screenplay project as thin entrypoints
