@@ -172,6 +172,21 @@ Run a syntax check:
 python3 -m py_compile scriptboard/*.py storyboard_tool/*.py
 ```
 
+## Engineering Assurance
+
+ScriptBoard uses a lightweight, combined engineering-control profile. The
+project evaluates the IEEE 730, 828, 829, 830, 1016, 1012, and 1058 control
+families without claiming certification or formal compliance:
+
+- `docs/assurance/ieee-applicability.md` records the profile decision, control
+  owners, acceptance evidence, freshness, and escalation triggers.
+- `docs/assurance/engineering-plan.md` is the combined requirements, design,
+  configuration, test/V&V, quality, and project-management plan.
+
+Live provider use receives stricter privacy controls than the base profile.
+Hosted, unattended, bulk, or multi-user operation requires reassessment before
+release or use.
+
 ## Privacy Boundary
 
 This repository should contain only reusable tooling and synthetic fixtures.
