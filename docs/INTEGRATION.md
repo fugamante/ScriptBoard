@@ -5,8 +5,16 @@ projects keep their own drafts and generated artifacts.
 
 Recommended integration patterns:
 
-- Install ScriptBoard in editable mode during active development:
-  `python3 -m pip install -e /path/to/ScriptBoard`
+- Install ScriptBoard into a virtual environment for routine operator use:
+  `python -m pip install /path/to/ScriptBoard`. Reinstall after source changes
+  with `python -m pip install --force-reinstall /path/to/ScriptBoard`.
+- Use editable mode only when actively developing ScriptBoard:
+  `python -m pip install -e /path/to/ScriptBoard`.
+- On macOS with Python 3.14, editable installs can fail at runtime if the
+  virtual environment's editable `.pth` file is marked hidden. If
+  `scriptboard --help` reports a missing `scriptboard` module, run
+  `chflags -R nohidden .venv`, clear the shell command cache with `hash -r`,
+  and retry. If it still fails, switch back to the normal local install path.
 - Keep generated storyboard files inside each screenplay project folder.
 - Add project-specific `ScriptBoard_Config.json` files for title, visual style,
   board copy, safety substitutions, source priority, and artifact names.

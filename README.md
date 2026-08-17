@@ -17,16 +17,48 @@ The current implementation supports:
 
 ## Install
 
-For local development:
+For normal local CLI use, install ScriptBoard into a virtual environment from
+the repository root:
 
 ```bash
-python3 -m pip install -e .
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install .
 ```
 
 Then run:
 
 ```bash
 scriptboard --help
+```
+
+A normal local install copies the package into the virtual environment. It is
+the most reliable option for operator runs; reinstall after source changes:
+
+```bash
+python -m pip install --force-reinstall .
+```
+
+For active development, editable mode is still supported:
+
+```bash
+python -m pip install -e .
+```
+
+On macOS with Python 3.14, an editable install can fail with
+`ModuleNotFoundError: No module named 'scriptboard'` if the virtual
+environment's editable `.pth` file is marked hidden. First clear that flag:
+
+```bash
+chflags -R nohidden .venv
+hash -r
+scriptboard --help
+```
+
+If the editable command still fails, use the normal local install path:
+
+```bash
+python -m pip install --force-reinstall .
 ```
 
 Without installation, the same CLI is available from the repository root:
