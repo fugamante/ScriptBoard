@@ -118,9 +118,13 @@ compensating evidence and an expiry date.
 ## Freshness and acceptance record
 
 - Accepted on: 2026-08-05.
-- Evidence: `python3 -m unittest` passed 31 tests and
+- Baseline evidence: `python3 -m unittest` passed 31 tests and
   `python3 -m py_compile scriptboard/*.py storyboard_tool/*.py` passed on
   2026-08-05.
+- Release-readiness evidence: `python3 scripts/install_smoke.py`,
+  `python3 -m unittest` (31 tests), package syntax compilation including
+  `scripts/install_smoke.py`, CLI help checks, `git diff --check`, and focused
+  privacy scans passed on 2026-08-17.
 - Retention: tracked controls and tests in Git; concise pass/fail results in the
   change/release record; private prompts and outputs are not assurance records.
 - Revisit no later than: 2026-11-03.

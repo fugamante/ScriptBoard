@@ -42,7 +42,7 @@ escalates before any hosted, unattended, scheduled, bulk, or multi-user use.
 
 | Family | Decision | Artifact and current evidence | Owner role | Acceptance criterion | Revisit trigger |
 | --- | --- | --- | --- | --- | --- |
-| IEEE 730 | Integrated | `engineering-plan.md`; `python3 -m unittest` passed 31 tests on 2026-08-05 | ScriptBoard maintainer | Required checks pass; privacy boundary and anomalies are explicit | Failed test, provider/privacy incident, or changed quality gate |
+| IEEE 730 | Integrated | `engineering-plan.md`; baseline `python3 -m unittest` passed 31 tests on 2026-08-05; release-readiness validation including install smoke passed on 2026-08-17 | ScriptBoard maintainer | Required checks pass; privacy boundary and anomalies are explicit | Failed test, provider/privacy incident, or changed quality gate |
 | IEEE 828 | Integrated | `engineering-plan.md`; `.gitignore`; `pyproject.toml` | ScriptBoard maintainer | Source, generated artifacts, credentials, versions, and recovery rules are identifiable | Package, schema, artifact, dependency, or release change |
 | IEEE 829 / ISO/IEC/IEEE 29119 | Integrated | `tests/test_scriptboard.py`; `docs/IMAGE_PROVIDERS.md` | Test owner | Unit suite passes and provider/privacy paths retain negative coverage | New provider, command, ledger field, failure state, or test gap |
 | IEEE 830 / ISO/IEC/IEEE 29148 | Integrated | `README.md`; `docs/INTEGRATION.md`; `engineering-plan.md` | Product owner | Intended use, constraints, privacy boundary, and acceptance criteria are reviewable | New user class, hosted use, changed output, or behavior commitment |
@@ -53,7 +53,12 @@ escalates before any hosted, unattended, scheduled, bulk, or multi-user use.
 ## Acceptance evidence and freshness
 
 - Baseline: repository state assessed on 2026-08-05.
-- Accepted test evidence: `python3 -m unittest`, 31 tests passed on 2026-08-05.
+- Baseline test evidence: `python3 -m unittest`, 31 tests passed on
+  2026-08-05.
+- Release-readiness evidence: `python3 scripts/install_smoke.py`,
+  `python3 -m unittest` (31 tests), package syntax compilation including
+  `scripts/install_smoke.py`, CLI help checks, `git diff --check`, and focused
+  privacy scans passed on 2026-08-17.
 - Evidence retention: plans and tests in Git; validation result in the change or
   release report when one is created. Do not commit private prompt/output logs.
 - Scheduled freshness: 2026-11-03, earlier than the lightweight maximum because
@@ -66,4 +71,3 @@ escalates before any hosted, unattended, scheduled, bulk, or multi-user use.
 None. The elevated provider lane is a tailored control, not an omission. Any
 future lowering requires explicit authorization, owner, rationale, compensating
 evidence, approval date, expiry, and revisit trigger.
-
