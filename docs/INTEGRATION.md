@@ -8,6 +8,9 @@ Recommended integration patterns:
 - Install ScriptBoard into a virtual environment for routine operator use:
   `python -m pip install /path/to/ScriptBoard`. Reinstall after source changes
   with `python -m pip install --force-reinstall /path/to/ScriptBoard`.
+- Run `python /path/to/ScriptBoard/scripts/install_smoke.py` after packaging
+  or setup changes to verify a temporary normal install and CLI help from
+  outside the repository root.
 - Use editable mode only when actively developing ScriptBoard:
   `python -m pip install -e /path/to/ScriptBoard`.
 - On macOS with Python 3.14, editable installs can fail at runtime if the

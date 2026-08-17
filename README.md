@@ -204,6 +204,18 @@ Run a syntax check:
 python3 -m py_compile scriptboard/*.py storyboard_tool/*.py
 ```
 
+Run the install smoke check:
+
+```bash
+python3 scripts/install_smoke.py
+```
+
+The smoke check creates a temporary virtual environment, installs this checkout
+with the normal local install path, and verifies `scriptboard --help` plus
+`python -m scriptboard --help` from outside the repository root. It removes
+`OPENAI_API_KEY` and `PYTHONPATH` from the child process environment and does
+not call image providers.
+
 ## Engineering Assurance
 
 ScriptBoard uses a lightweight, combined engineering-control profile. The
