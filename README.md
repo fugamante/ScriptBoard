@@ -3,6 +3,9 @@
 ScriptBoard turns screenplay drafts into storyboard prompt packs, resumable
 image-job ledgers, panel catalogs, and a local HTML review board.
 
+Current public release:
+[v0.1.0](https://github.com/fugamante/ScriptBoard/releases/tag/v0.1.0).
+
 The current implementation supports:
 
 - Final Draft `.fdx` draft extraction
@@ -17,8 +20,17 @@ The current implementation supports:
 
 ## Install
 
-For normal local CLI use, install ScriptBoard into a virtual environment from
-the repository root:
+For the current public release, install ScriptBoard into a virtual environment
+from the pinned GitHub tag:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install "git+https://github.com/fugamante/ScriptBoard.git@v0.1.0"
+scriptboard --help
+```
+
+For normal local CLI use from a checkout, install from the repository root:
 
 ```bash
 python3 -m venv .venv
@@ -26,7 +38,7 @@ source .venv/bin/activate
 python -m pip install .
 ```
 
-Then run:
+For checkout installs, verify the command:
 
 ```bash
 scriptboard --help

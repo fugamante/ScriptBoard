@@ -5,6 +5,9 @@ projects keep their own drafts and generated artifacts.
 
 Recommended integration patterns:
 
+- For reproducible operator installs from the public release, pin the GitHub
+  tag:
+  `python -m pip install "git+https://github.com/fugamante/ScriptBoard.git@v0.1.0"`.
 - Install ScriptBoard into a virtual environment for routine operator use:
   `python -m pip install /path/to/ScriptBoard`. Reinstall after source changes
   with `python -m pip install --force-reinstall /path/to/ScriptBoard`.
