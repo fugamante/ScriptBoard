@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -147,6 +148,15 @@ def sensitive_values_for_job(*jobs: dict[str, Any]) -> list[str]:
     return values
 
 
+def sensitive_values_for_provider(provider: ImageProvider) -> list[str]:
+    values = []
+    for attr in ("api_key",):
+        value = str(getattr(provider, attr, "") or "").strip()
+        if len(value) >= 8:
+            values.append(value)
+    return values
+
+
 def safe_provider_text(value: Any, *, sensitive_values: list[str], fallback: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -284,7 +294,13 @@ class OpenAIImageProvider:
 
     def generate(self, job: dict[str, Any]) -> GenerationResult:
         if not self.api_key:
-            raise ProviderError("OPENAI_API_KEY is required for provider 'openai'", persist_message=True)
+            raise ProviderError(
+                "OPENAI_API_KEY is required for provider 'openai'",
+                error_type="missing_api_key",
+                persist_message=True,
+            )
+        sensitive_values = sensitive_values_for_job(job)
+        sensitive_values.extend(sensitive_values_for_provider(self))
         payload = self.request_payload(job)
         request_metadata = {key: value for key, value in payload.items() if key != "prompt"}
         request_metadata["prompt_hash"] = str(job.get("prompt_hash") or sha256_bytes(payload["prompt"].encode("utf-8")))
@@ -299,33 +315,48 @@ class OpenAIImageProvider:
         )
         try:
             with request.urlopen(req, timeout=self.timeout_s) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                try:
+                    body = json.loads(response.read().decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise ProviderError(
+                        "OpenAI Image API response was not valid JSON",
+                        error_type="malformed_response",
+                        persist_message=True,
+                    ) from exc
                 request_id = response.headers.get("x-request-id")
         except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            finally:
+                exc.close()
             error_type = None
             error_code = None
             try:
                 error_payload = json.loads(detail).get("error") or {}
                 error_type = safe_provider_text(
                     error_payload.get("type"),
-                    sensitive_values=[],
+                    sensitive_values=sensitive_values,
                     fallback="provider_error",
                 )
                 error_code = safe_provider_text(
                     error_payload.get("code"),
-                    sensitive_values=[],
+                    sensitive_values=sensitive_values,
                     fallback="provider_error",
                 )
             except (json.JSONDecodeError, AttributeError):
                 pass
             suffix = f": {error_code or error_type}" if error_code or error_type else ""
+            request_id = safe_provider_text(
+                exc.headers.get("x-request-id") if exc.headers else None,
+                sensitive_values=sensitive_values,
+                fallback="request_id_redacted",
+            )
             raise ProviderError(
                 f"OpenAI Image API failed with HTTP {exc.code}{suffix}",
                 error_type=error_type or "http_error",
                 error_code=error_code or None,
                 http_status=exc.code,
-                request_id=exc.headers.get("x-request-id") if exc.headers else None,
+                request_id=request_id or None,
                 persist_message=True,
             ) from exc
         except error.URLError as exc:
@@ -339,12 +370,21 @@ class OpenAIImageProvider:
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(
                 "OpenAI Image API response did not include data[0].b64_json",
+                error_type="missing_image_data",
+                persist_message=True,
+            ) from exc
+        try:
+            image_bytes = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise ProviderError(
+                "OpenAI Image API response included invalid base64 image data",
+                error_type="invalid_image_data",
                 persist_message=True,
             ) from exc
         return GenerationResult(
             provider=self.name,
             model=self.model,
-            image_bytes=base64.b64decode(encoded),
+            image_bytes=image_bytes,
             request_metadata=request_metadata,
             provider_job_id=request_id,
             output_format=self.output_format,
@@ -952,6 +992,7 @@ def run_provider_generation(
             prompt_revisions=prompt_revisions,
         )
         sensitive_values = sensitive_values_for_job(job, provider_job)
+        sensitive_values.extend(sensitive_values_for_provider(provider))
         job["status"] = "running"
         job["updated_at"] = started_at
         job["provider"] = provider_metadata(

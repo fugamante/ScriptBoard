@@ -169,6 +169,10 @@ Failure metadata uses the same envelope with `status: "failed"` and an `error`
 message. Raw provider error bodies are not persisted because they may echo
 prompt text. Safe error metadata may include provider error type, provider error
 code, HTTP status, and request ID.
+Malformed provider responses are normalized into safe failure metadata instead
+of persisting raw response bodies. OpenAI JSON parse failures, missing image
+payloads, invalid base64 image data, and missing local API keys are classified
+without writing provider body content.
 
 An interrupted run may leave a job `running`; the next run treats a missing
 image file as resumable work and attempts the job again. If the image file
@@ -187,7 +191,9 @@ The ledger summary now supports:
 image generation request to the OpenAI Image API, decodes `data[0].b64_json`,
 and writes the decoded bytes to the local image path. The transient request
 body contains `job.prompt`; persisted `request_metadata` stores only model
-parameters and `prompt_hash`.
+parameters and `prompt_hash`. Provider credentials are treated as local
+redaction values during ledger persistence; request metadata must not persist
+the key, prompt text, signed URLs, or raw response bodies.
 
 Default settings:
 

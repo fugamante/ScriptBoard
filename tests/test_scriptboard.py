@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import base64
 from contextlib import redirect_stderr
 import hashlib
-from io import StringIO
+from io import BytesIO, StringIO
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib import error
 
 from scriptboard import board, builder, cli, image_jobs, image_providers
 from scriptboard.config import load_config
@@ -64,6 +68,46 @@ class UnsafePersistingProvider:
             request_id=f"request {prompt}",
             persist_message=True,
         )
+
+
+class MockOpenAIResponse:
+    def __init__(self, payload: dict | bytes, *, request_id: str = "req_test") -> None:
+        self._payload = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
+        self.headers = {"x-request-id": request_id}
+
+    def __enter__(self) -> "MockOpenAIResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+def mock_openai_success(image_bytes: bytes, *, request_id: str = "req_test") -> MockOpenAIResponse:
+    return MockOpenAIResponse(
+        {"data": [{"b64_json": base64.b64encode(image_bytes).decode("ascii")}]},
+        request_id=request_id,
+    )
+
+
+def mock_openai_http_error(
+    *,
+    status: int = 400,
+    body: dict | bytes | None = None,
+    request_id: str = "req_error",
+) -> error.HTTPError:
+    if body is None:
+        body = {"error": {"type": "invalid_request_error", "code": "bad_request"}}
+    payload = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
+    return error.HTTPError(
+        "https://api.openai.com/v1/images/generations",
+        status,
+        "provider error",
+        {"x-request-id": request_id},
+        BytesIO(payload),
+    )
 
 
 class ScriptBoardTests(unittest.TestCase):
@@ -857,6 +901,237 @@ class ScriptBoardTests(unittest.TestCase):
 
         self.assertEqual(after, before)
         self.assertFalse(Path(raw["jobs"][0]["image_path"]).exists())
+
+    def test_openai_request_payload_uses_configured_options(self) -> None:
+        provider = image_providers.OpenAIImageProvider(
+            api_key="unit-test-openai-key",
+            model="test-image-model",
+            size="1024x1024",
+            quality="low",
+            output_format="webp",
+        )
+
+        payload = provider.request_payload(
+            {
+                "id": "job-1",
+                "prompt": "Synthetic provider prompt.",
+                "prompt_hash": "hash-1",
+            }
+        )
+
+        self.assertEqual(
+            payload,
+            {
+                "model": "test-image-model",
+                "prompt": "Synthetic provider prompt.",
+                "n": 1,
+                "size": "1024x1024",
+                "quality": "low",
+                "output_format": "webp",
+            },
+        )
+        self.assertNotIn("prompt_hash", payload)
+
+    def test_openai_provider_success_uses_generation_endpoint_and_metadata(self) -> None:
+        image_bytes = image_providers.fake_png("openai-success")
+        seen: dict[str, object] = {}
+
+        def fake_urlopen(req: object, timeout: int) -> MockOpenAIResponse:
+            seen["url"] = req.full_url
+            seen["method"] = req.get_method()
+            seen["timeout"] = timeout
+            seen["authorization"] = req.get_header("Authorization")
+            seen["content_type"] = req.get_header("Content-type")
+            seen["payload"] = json.loads(req.data.decode("utf-8"))
+            return mock_openai_success(image_bytes, request_id="req_success")
+
+        provider = image_providers.OpenAIImageProvider(api_key="unit-test-openai-key", timeout_s=7)
+        with patch("scriptboard.image_providers.request.urlopen", fake_urlopen):
+            result = provider.generate(
+                {
+                    "id": "job-1",
+                    "prompt": "Synthetic provider prompt.",
+                    "prompt_hash": "hash-1",
+                }
+            )
+
+        self.assertEqual(seen["url"], "https://api.openai.com/v1/images/generations")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["timeout"], 7)
+        self.assertEqual(seen["authorization"], "Bearer unit-test-openai-key")
+        self.assertEqual(seen["content_type"], "application/json")
+        self.assertEqual(seen["payload"]["prompt"], "Synthetic provider prompt.")
+        self.assertEqual(result.image_bytes, image_bytes)
+        self.assertEqual(result.provider, "openai")
+        self.assertEqual(result.provider_job_id, "req_success")
+        self.assertEqual(result.request_metadata["prompt_hash"], "hash-1")
+        self.assertNotIn("prompt", result.request_metadata)
+        self.assertNotIn("unit-test-openai-key", json.dumps(result.request_metadata))
+
+    def test_openai_provider_missing_api_key_fails_before_network(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            provider = image_providers.OpenAIImageProvider()
+            with patch("scriptboard.image_providers.request.urlopen") as urlopen:
+                with self.assertRaisesRegex(image_providers.ProviderError, "OPENAI_API_KEY") as raised:
+                    provider.generate({"id": "job-1", "prompt": "Synthetic provider prompt."})
+
+        self.assertEqual(raised.exception.error_type, "missing_api_key")
+        urlopen.assert_not_called()
+
+    def test_openai_provider_http_error_classifies_safe_provider_fields(self) -> None:
+        provider = image_providers.OpenAIImageProvider(api_key="unit-test-openai-key")
+        http_error = mock_openai_http_error(
+            status=429,
+            body={"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded"}},
+            request_id="req_rate_limit",
+        )
+
+        with patch("scriptboard.image_providers.request.urlopen", side_effect=http_error):
+            with self.assertRaises(image_providers.ProviderError) as raised:
+                provider.generate({"id": "job-1", "prompt": "Synthetic provider prompt."})
+
+        exc = raised.exception
+        self.assertEqual(exc.error_type, "rate_limit_error")
+        self.assertEqual(exc.error_code, "rate_limit_exceeded")
+        self.assertEqual(exc.http_status, 429)
+        self.assertEqual(exc.request_id, "req_rate_limit")
+        self.assertIn("HTTP 429", str(exc))
+        self.assertNotIn("Synthetic provider prompt.", str(exc))
+
+    def test_openai_provider_http_error_redacts_unsafe_provider_fields_before_raise(self) -> None:
+        api_key = "unit-test-openai-key-private"
+        prompt = "Synthetic provider prompt that must not persist."
+        provider = image_providers.OpenAIImageProvider(api_key=api_key)
+        http_error = mock_openai_http_error(
+            status=400,
+            body={"error": {"type": f"type {prompt}", "code": f"code {api_key}"}},
+            request_id=f"https://example.invalid/signed?token={api_key}",
+        )
+
+        with patch("scriptboard.image_providers.request.urlopen", side_effect=http_error):
+            with self.assertRaises(image_providers.ProviderError) as raised:
+                provider.generate({"id": "job-1", "prompt": prompt})
+
+        exc = raised.exception
+        self.assertEqual(exc.error_type, "provider_error")
+        self.assertEqual(exc.error_code, "provider_error")
+        self.assertEqual(exc.request_id, "request_id_redacted")
+        self.assertNotIn(prompt, str(exc))
+        self.assertNotIn(api_key, str(exc))
+        self.assertNotIn("https://example.invalid", str(exc))
+
+    def test_openai_provider_network_error_is_classified(self) -> None:
+        provider = image_providers.OpenAIImageProvider(api_key="unit-test-openai-key")
+
+        with patch(
+            "scriptboard.image_providers.request.urlopen",
+            side_effect=error.URLError("temporary failure"),
+        ):
+            with self.assertRaises(image_providers.ProviderError) as raised:
+                provider.generate({"id": "job-1", "prompt": "Synthetic provider prompt."})
+
+        self.assertEqual(raised.exception.error_type, "network_error")
+        self.assertEqual(str(raised.exception), "OpenAI Image API request failed")
+
+    def test_openai_provider_malformed_json_response_is_classified(self) -> None:
+        provider = image_providers.OpenAIImageProvider(api_key="unit-test-openai-key")
+
+        with patch(
+            "scriptboard.image_providers.request.urlopen",
+            return_value=MockOpenAIResponse(b"{not-json"),
+        ):
+            with self.assertRaises(image_providers.ProviderError) as raised:
+                provider.generate({"id": "job-1", "prompt": "Synthetic provider prompt."})
+
+        self.assertEqual(raised.exception.error_type, "malformed_response")
+        self.assertEqual(str(raised.exception), "OpenAI Image API response was not valid JSON")
+
+    def test_openai_provider_missing_image_data_is_classified(self) -> None:
+        provider = image_providers.OpenAIImageProvider(api_key="unit-test-openai-key")
+
+        with patch(
+            "scriptboard.image_providers.request.urlopen",
+            return_value=MockOpenAIResponse({"data": [{}]}),
+        ):
+            with self.assertRaises(image_providers.ProviderError) as raised:
+                provider.generate({"id": "job-1", "prompt": "Synthetic provider prompt."})
+
+        self.assertEqual(raised.exception.error_type, "missing_image_data")
+        self.assertEqual(str(raised.exception), "OpenAI Image API response did not include data[0].b64_json")
+
+    def test_openai_provider_invalid_base64_response_is_classified(self) -> None:
+        provider = image_providers.OpenAIImageProvider(api_key="unit-test-openai-key")
+
+        with patch(
+            "scriptboard.image_providers.request.urlopen",
+            return_value=MockOpenAIResponse({"data": [{"b64_json": "not base64!"}]}),
+        ):
+            with self.assertRaises(image_providers.ProviderError) as raised:
+                provider.generate({"id": "job-1", "prompt": "Synthetic provider prompt."})
+
+        self.assertEqual(raised.exception.error_type, "invalid_image_data")
+        self.assertEqual(str(raised.exception), "OpenAI Image API response included invalid base64 image data")
+
+    def test_openai_success_persistence_omits_prompt_api_key_and_signed_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            api_key = "unit-test-openai-key-private"
+            provider = image_providers.OpenAIImageProvider(api_key=api_key)
+            image_bytes = image_providers.fake_png("openai-persistence")
+
+            with patch(
+                "scriptboard.image_providers.request.urlopen",
+                return_value=mock_openai_success(image_bytes, request_id=api_key),
+            ):
+                result = image_providers.run_provider_generation(ledger_path, provider, limit=1)
+
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+            job = raw["jobs"][0]
+            provider_text = json.dumps(job["provider"], sort_keys=True)
+
+        self.assertEqual(result, {"selected": 1, "completed": 1, "failed": 0})
+        self.assertEqual(job["provider"]["provider"], "openai")
+        self.assertEqual(job["provider"]["provider_job_id"], "provider_job_id_redacted")
+        self.assertEqual(job["provider"]["request_metadata"]["prompt_hash"], "hash-1")
+        self.assertNotIn(api_key, provider_text)
+        self.assertNotIn("Storyboard prompt 1", provider_text)
+        self.assertNotIn("https://", provider_text)
+
+    def test_openai_error_persistence_omits_prompt_api_key_and_signed_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            api_key = "unit-test-openai-key-private"
+            provider = image_providers.OpenAIImageProvider(api_key=api_key)
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+            prompt = raw["jobs"][0]["prompt"]
+            http_error = mock_openai_http_error(
+                status=400,
+                body={
+                    "error": {
+                        "type": f"type {prompt}",
+                        "code": "https://example.invalid/signed?token=abc",
+                    }
+                },
+                request_id=f"https://example.invalid/signed?token={api_key}",
+            )
+
+            with patch("scriptboard.image_providers.request.urlopen", side_effect=http_error):
+                result = image_providers.run_provider_generation(ledger_path, provider, limit=1)
+
+            raw_text = ledger_path.read_text(encoding="utf-8")
+            raw = json.loads(raw_text)
+            provider_text = json.dumps(raw["jobs"][0]["provider"], sort_keys=True)
+
+        self.assertEqual(result, {"selected": 1, "completed": 0, "failed": 1})
+        self.assertEqual(raw["jobs"][0]["provider"]["error_type"], "provider_error")
+        self.assertEqual(raw["jobs"][0]["provider"]["error_code"], "provider_error")
+        self.assertEqual(raw["jobs"][0]["provider"]["request_id"], "request_id_redacted")
+        self.assertNotIn(api_key, provider_text)
+        self.assertNotIn(prompt, provider_text)
+        self.assertNotIn("https://example.invalid", provider_text)
+        self.assertNotIn(api_key, raw_text)
 
     def test_provider_generation_targets_exact_job_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
