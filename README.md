@@ -228,6 +228,18 @@ with the normal local install path, and verifies `scriptboard --help` plus
 `OPENAI_API_KEY` and `PYTHONPATH` from the child process environment and does
 not call image providers.
 
+Run the release readiness check before tagging or publishing:
+
+```bash
+python3 scripts/release_check.py
+```
+
+The release check is credential-free by default. It runs whitespace, ignored
+local-state, tracked-path, focused privacy, unittest, syntax, CLI help, and
+install-smoke checks with `OPENAI_API_KEY` and `PYTHONPATH` removed from child
+process environments. It does not call providers, generate images, push, tag,
+or publish releases.
+
 ## Engineering Assurance
 
 ScriptBoard uses a lightweight, combined engineering-control profile. The

@@ -14,6 +14,11 @@ Recommended integration patterns:
 - Run `python /path/to/ScriptBoard/scripts/install_smoke.py` after packaging
   or setup changes to verify a temporary normal install and CLI help from
   outside the repository root.
+- Run `python /path/to/ScriptBoard/scripts/release_check.py` before tagging or
+  publishing. It performs the credential-free release validation stack,
+  including install smoke, CLI help, syntax, unit tests, ignored local-state
+  checks, and focused privacy scans. It does not call providers, generate
+  images, push, tag, or publish.
 - Use editable mode only when actively developing ScriptBoard:
   `python -m pip install -e /path/to/ScriptBoard`.
 - On macOS with Python 3.14, editable installs can fail at runtime if the
