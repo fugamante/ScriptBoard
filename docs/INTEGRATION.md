@@ -33,7 +33,9 @@ Recommended integration patterns:
   path once `OPENAI_API_KEY` is available. Use `--provider fake` for local
   validation without credentials or network access.
 - Review pending image jobs with `scriptboard plan` and prefer exact
-  `scriptboard generate --job-id <job-id>` runs for real provider work.
+  `scriptboard generate --job-id <job-id>` runs for real provider work. JSON is
+  the default output; pass `--format text` to `plan`, `generate --dry-run`, or
+  `revisions validate` for a sanitized terminal review.
 - Keep moderation-blocked prompt revisions in an ignored project-local JSON
   file, then pass it explicitly with `--revisions`. Mark an entry `ready` only
   after human review; ScriptBoard rejects draft, empty, or stale-hash entries.

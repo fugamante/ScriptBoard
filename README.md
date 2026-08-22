@@ -112,14 +112,19 @@ Review pending jobs before a real run:
 
 ```bash
 scriptboard plan --limit 5
+scriptboard plan --format text --limit 5
 ```
 
-After reviewing the non-sensitive job metadata, target one exact job. Use
-`generate --dry-run` to verify the mutating command's selection without writing
-the ledger or image files:
+JSON is the default output for automation. Use `--format text` for an optional
+sanitized terminal review that shows job IDs, status, scene IDs, panel indexes,
+prompt hashes, image existence, selectable state, revision hashes/status, and
+selection blockers. After reviewing the non-sensitive job metadata, target one
+exact job. Use `generate --dry-run` to verify the mutating command's selection
+without writing the ledger or image files:
 
 ```bash
 scriptboard generate --dry-run --job-id <job-id>
+scriptboard generate --dry-run --format text --job-id <job-id>
 scriptboard generate --provider openai --job-id <job-id>
 ```
 
@@ -138,6 +143,7 @@ metadata first:
 ```bash
 scriptboard revisions scaffold --job-id <job-id> --revisions Storyboard_Prompt_Revisions.json
 scriptboard revisions validate --job-id <job-id> --revisions Storyboard_Prompt_Revisions.json --strict
+scriptboard revisions validate --format text --job-id <job-id> --revisions Storyboard_Prompt_Revisions.json --strict
 scriptboard plan --job-id <job-id> --retry-failed --revisions Storyboard_Prompt_Revisions.json
 ```
 

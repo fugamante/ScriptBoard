@@ -32,6 +32,7 @@ The safe review command is:
 
 ```bash
 scriptboard plan --limit 5
+scriptboard plan --format text --limit 5
 ```
 
 `scriptboard plan` is read-only. It prints sanitized job metadata so operators
@@ -41,6 +42,7 @@ can choose exact job IDs before calling a provider. It supports:
 - `--status failed` for failed-job review
 - `--status all` for a bounded ledger overview
 - `--job-id <job-id>` for one exact sanitized job
+- `--format text` for a human-readable table; JSON remains the default output
 
 `scriptboard generate` loads `Storyboard_Image_Jobs.json`, selects jobs whose
 image file is missing, marks each selected job `running`, saves the ledger,
@@ -53,6 +55,7 @@ without instantiating a provider, writing the ledger, or writing image files:
 
 ```bash
 scriptboard generate --dry-run --limit 1
+scriptboard generate --dry-run --format text --limit 1
 ```
 
 Use `--job-id` after previewing or externally approving a specific panel. Exact
@@ -77,6 +80,7 @@ explicitly:
 ```bash
 scriptboard revisions scaffold --job-id scene_001_panel_001 --revisions Storyboard_Prompt_Revisions.json
 scriptboard revisions validate --job-id scene_001_panel_001 --revisions Storyboard_Prompt_Revisions.json --strict
+scriptboard revisions validate --format text --job-id scene_001_panel_001 --revisions Storyboard_Prompt_Revisions.json --strict
 scriptboard plan --job-id scene_001_panel_001 --retry-failed --revisions Storyboard_Prompt_Revisions.json
 scriptboard generate --dry-run --job-id scene_001_panel_001 --retry-failed --revisions Storyboard_Prompt_Revisions.json
 ```

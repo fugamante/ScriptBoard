@@ -608,6 +608,132 @@ class ScriptBoardTests(unittest.TestCase):
         self.assertNotIn("Storyboard prompt", stderr.getvalue())
         self.assertNotIn("A test action beat", stderr.getvalue())
 
+    def test_cli_plan_text_format_reviews_pending_jobs_without_private_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=2)
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    cli.main(["plan", "--jobs", str(ledger_path), "--limit", "2", "--format", "text"]),
+                    0,
+                )
+            output = stderr.getvalue()
+
+        self.assertIn("ScriptBoard plan", output)
+        self.assertIn("job_id", output)
+        self.assertIn("selectable", output)
+        self.assertIn("job-1", output)
+        self.assertIn("job-2", output)
+        self.assertIn("hash-1", output)
+        self.assertIn("yes", output)
+        self.assertFalse(output.lstrip().startswith("{"))
+        self.assertNotIn("Storyboard prompt", output)
+        self.assertNotIn("A test action beat", output)
+
+    def test_cli_plan_text_format_shows_blocked_revision_without_private_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            private_prompt = "Synthetic draft prompt that text output must not print."
+            revisions_path = self.write_revision_file(
+                root,
+                status="draft",
+                revised_prompt=private_prompt,
+            )
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "plan",
+                            "--jobs",
+                            str(ledger_path),
+                            "--status",
+                            "all",
+                            "--revisions",
+                            str(revisions_path),
+                            "--format",
+                            "text",
+                        ]
+                    ),
+                    0,
+                )
+            output = stderr.getvalue()
+
+        self.assertIn("job-1", output)
+        self.assertIn("draft", output)
+        self.assertIn("prompt revision is not ready", output)
+        self.assertIn("no", output)
+        self.assertNotIn(private_prompt, output)
+        self.assertNotIn("Storyboard prompt", output)
+        self.assertNotIn("A test action beat", output)
+
+    def test_cli_plan_text_format_shows_failed_retry_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=2)
+            raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+            raw["jobs"][0]["status"] = "failed"
+            ledger_path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "plan",
+                            "--jobs",
+                            str(ledger_path),
+                            "--status",
+                            "failed",
+                            "--format",
+                            "text",
+                        ]
+                    ),
+                    0,
+                )
+            output = stderr.getvalue()
+
+        self.assertIn("job-1", output)
+        self.assertIn("failed", output)
+        self.assertIn("--retry-failed", output)
+        self.assertIn("no", output)
+        self.assertNotIn("job-2", output)
+        self.assertNotIn("Storyboard prompt", output)
+        self.assertNotIn("A test action beat", output)
+
+    def test_cli_plan_text_format_reviews_exact_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=2)
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "plan",
+                            "--jobs",
+                            str(ledger_path),
+                            "--job-id",
+                            "job-2",
+                            "--format",
+                            "text",
+                        ]
+                    ),
+                    0,
+                )
+            output = stderr.getvalue()
+
+        self.assertIn("job-2", output)
+        self.assertIn("hash-2", output)
+        self.assertNotIn("job-1", output)
+        self.assertNotIn("Storyboard prompt", output)
+        self.assertNotIn("A test action beat", output)
+
     def test_cli_revisions_scaffold_ready_entry_without_printing_prompt_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -653,6 +779,45 @@ class ScriptBoardTests(unittest.TestCase):
         self.assertNotIn(private_prompt, stderr.getvalue())
         self.assertNotIn("Storyboard prompt", stderr.getvalue())
         self.assertNotIn("A test action beat", stderr.getvalue())
+
+    def test_cli_revisions_validate_text_format_without_private_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            private_prompt = "Synthetic ready prompt that text validation must not print."
+            revisions_path = self.write_revision_file(root, revised_prompt=private_prompt)
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "revisions",
+                            "validate",
+                            "--jobs",
+                            str(ledger_path),
+                            "--revisions",
+                            str(revisions_path),
+                            "--job-id",
+                            "job-1",
+                            "--strict",
+                            "--format",
+                            "text",
+                        ]
+                    ),
+                    0,
+                )
+            output = stderr.getvalue()
+
+        self.assertIn("ScriptBoard revisions validate", output)
+        self.assertIn("job-1", output)
+        self.assertIn("ready", output)
+        self.assertIn("hash-1", output)
+        self.assertIn(image_providers.prompt_text_hash(private_prompt), output)
+        self.assertIn("yes", output)
+        self.assertNotIn(private_prompt, output)
+        self.assertNotIn("Storyboard prompt", output)
+        self.assertNotIn("A test action beat", output)
 
     def test_cli_revisions_validate_ready_entry_without_private_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -901,6 +1066,70 @@ class ScriptBoardTests(unittest.TestCase):
 
         self.assertEqual(after, before)
         self.assertFalse(Path(raw["jobs"][0]["image_path"]).exists())
+
+    def test_cli_generate_dry_run_text_format_is_read_only_and_omits_private_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            before = ledger_path.read_text(encoding="utf-8")
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "generate",
+                            "--jobs",
+                            str(ledger_path),
+                            "--provider",
+                            "openai",
+                            "--dry-run",
+                            "--format",
+                            "text",
+                        ]
+                    ),
+                    0,
+                )
+            after = ledger_path.read_text(encoding="utf-8")
+            output = stderr.getvalue()
+            raw = json.loads(after)
+
+        self.assertEqual(after, before)
+        self.assertIn("ScriptBoard generate dry-run", output)
+        self.assertIn("provider=openai", output)
+        self.assertIn("job-1", output)
+        self.assertIn("hash-1", output)
+        self.assertIn("selectable", output)
+        self.assertIn("yes", output)
+        self.assertFalse(Path(raw["jobs"][0]["image_path"]).exists())
+        self.assertNotIn("Storyboard prompt", output)
+        self.assertNotIn("A test action beat", output)
+
+    def test_cli_generate_text_format_requires_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = self.write_provider_ledger(root, count=1)
+            before = ledger_path.read_text(encoding="utf-8")
+            stderr = StringIO()
+
+            with redirect_stderr(stderr):
+                code = cli.main(
+                    [
+                        "generate",
+                        "--jobs",
+                        str(ledger_path),
+                        "--provider",
+                        "fake",
+                        "--format",
+                        "text",
+                    ]
+                )
+            after = ledger_path.read_text(encoding="utf-8")
+
+        self.assertEqual(code, 2)
+        self.assertEqual(after, before)
+        self.assertIn("--format text is only supported with generate --dry-run", stderr.getvalue())
+        self.assertFalse(Path(json.loads(after)["jobs"][0]["image_path"]).exists())
 
     def test_openai_request_payload_uses_configured_options(self) -> None:
         provider = image_providers.OpenAIImageProvider(

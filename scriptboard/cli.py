@@ -25,6 +25,154 @@ def resolve_optional_path(value: Path | None, base: Path) -> Path | None:
     return resolve_path(value, base) if value else None
 
 
+def text_cell(value: object) -> str:
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(value)
+
+
+def text_table(headers: list[str], rows: list[list[object]]) -> str:
+    rendered_rows = [[text_cell(cell) for cell in row] for row in rows]
+    widths = [len(header) for header in headers]
+    for row in rendered_rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    def render(row: list[str]) -> str:
+        return " | ".join(cell.ljust(widths[index]) for index, cell in enumerate(row))
+
+    separator = "-+-".join("-" * width for width in widths)
+    return "\n".join([render(headers), separator, *(render(row) for row in rendered_rows)])
+
+
+def summary_text(summary: dict[str, object]) -> str:
+    return " ".join(
+        f"{key}={text_cell(summary.get(key))}"
+        for key in ("total", "pending", "done", "failed")
+        if key in summary
+    )
+
+
+def blockers_text(item: dict[str, object]) -> str:
+    blockers = item.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        return "; ".join(str(blocker) for blocker in blockers)
+    return text_cell(item.get("blocker"))
+
+
+def revision_text(item: dict[str, object]) -> str:
+    revision = item.get("revision")
+    if not isinstance(revision, dict):
+        return "-"
+    parts = [
+        f"status={text_cell(revision.get('status'))}",
+        f"applies={text_cell(revision.get('applies'))}",
+        f"source={text_cell(revision.get('source_prompt_hash'))}",
+        f"revised={text_cell(revision.get('revised_prompt_hash'))}",
+    ]
+    if revision.get("blocker"):
+        parts.append(f"blocker={revision['blocker']}")
+    return " ".join(parts)
+
+
+def review_text(result: dict[str, object], *, title: str) -> str:
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    selection = result.get("review") or result.get("selection") or {}
+    if not isinstance(selection, dict):
+        selection = {}
+    jobs = result.get("jobs")
+    if not isinstance(jobs, list):
+        jobs = []
+
+    selected_ids = {str(job.get("id")) for job in jobs if isinstance(job, dict)}
+    rows = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        selectable = job.get("selectable")
+        if selectable is None:
+            selectable = str(job.get("id")) in selected_ids
+        rows.append(
+            [
+                job.get("id"),
+                job.get("status"),
+                job.get("scene_id"),
+                job.get("panel_index"),
+                job.get("prompt_hash"),
+                job.get("image_exists"),
+                selectable,
+                revision_text(job),
+                blockers_text(job),
+            ]
+        )
+
+    lines = [
+        title,
+        f"summary {summary_text(summary)}",
+        "selection "
+        + " ".join(
+            f"{key}={text_cell(selection.get(key))}"
+            for key in ("limit", "status", "job_id", "retry_failed", "selected", "revisions")
+            if key in selection
+        ),
+    ]
+    if "provider" in result:
+        lines.append(f"provider={text_cell(result.get('provider'))}")
+    lines.append(
+        text_table(
+            ["job_id", "status", "scene_id", "panel", "prompt_hash", "image", "selectable", "revision", "blockers"],
+            rows,
+        )
+    )
+    return "\n".join(lines)
+
+
+def revisions_validate_text(result: dict[str, object]) -> str:
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    revisions = result.get("revisions")
+    if not isinstance(revisions, list):
+        revisions = []
+    rows = []
+    for item in revisions:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            [
+                item.get("job_id"),
+                item.get("status"),
+                item.get("source_prompt_hash"),
+                item.get("current_prompt_hash"),
+                item.get("revised_prompt_hash"),
+                item.get("applies"),
+                item.get("image_exists"),
+                item.get("blocker"),
+            ]
+        )
+    lines = [
+        "ScriptBoard revisions validate",
+        "summary "
+        + " ".join(
+            f"{key}={text_cell(summary.get(key))}"
+            for key in ("total", "ready", "draft", "applies", "blocked", "missing_job")
+            if key in summary
+        ),
+        text_table(
+            ["job_id", "status", "source_hash", "current_hash", "revised_hash", "applies", "image", "blocker"],
+            rows,
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def print_json_or_text(result: dict[str, object], *, output_format: str, text: str) -> None:
+    if output_format == "json":
+        print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
+        return
+    print(text, file=sys.stderr)
+
+
 def run_build(args: argparse.Namespace) -> int:
     input_dir = args.input.expanduser().resolve()
     config = load_config(args.config, base_dir=input_dir)
@@ -95,8 +243,16 @@ def run_generate(args: argparse.Namespace) -> int:
             prompt_revisions=prompt_revisions,
         )
         result["provider"] = args.provider
-        print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
+        print_json_or_text(
+            result,
+            output_format=args.format,
+            text=review_text(result, title="ScriptBoard generate dry-run"),
+        )
         return 0
+
+    if args.format != "json":
+        print("--format text is only supported with generate --dry-run", file=sys.stderr)
+        return 2
 
     provider = image_providers.make_provider(
         args.provider,
@@ -133,7 +289,11 @@ def run_plan(args: argparse.Namespace) -> int:
         retry_failed=args.retry_failed,
         prompt_revisions=prompt_revisions,
     )
-    print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
+    print_json_or_text(
+        result,
+        output_format=args.format,
+        text=review_text(result, title="ScriptBoard plan"),
+    )
     return 0
 
 
@@ -171,7 +331,11 @@ def run_revisions_validate(args: argparse.Namespace) -> int:
         revisions_path,
         job_id=args.job_id,
     )
-    print(json.dumps(result, indent=2, ensure_ascii=False), file=sys.stderr)
+    print_json_or_text(
+        result,
+        output_format=args.format,
+        text=revisions_validate_text(result),
+    )
     return 1 if args.strict and result["summary"]["blocked"] else 0
 
 
@@ -228,6 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--job-id", help="Review one exact job ID regardless of status filter.")
     plan_parser.add_argument("--retry-failed", action="store_true", help="Show failed jobs as selectable for retry.")
     plan_parser.add_argument("--revisions", type=Path, help="Ignored local prompt revision JSON path.")
+    plan_parser.add_argument("--format", choices=["json", "text"], default="json", help="Output format.")
     plan_parser.set_defaults(func=run_plan)
 
     revisions_parser = subparsers.add_parser(
@@ -280,6 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exit 1 when any selected revision is blocked.",
     )
+    revisions_validate_parser.add_argument("--format", choices=["json", "text"], default="json", help="Output format.")
     revisions_validate_parser.set_defaults(func=run_revisions_validate)
 
     generate_parser = subparsers.add_parser(
@@ -299,6 +465,12 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--retry-failed", action="store_true", help="Retry failed jobs before pending jobs.")
     generate_parser.add_argument("--revisions", type=Path, help="Ignored local prompt revision JSON path.")
     generate_parser.add_argument("--stop-on-error", action="store_true", help="Exit on the first provider failure.")
+    generate_parser.add_argument(
+        "--format",
+        choices=["json", "text"],
+        default="json",
+        help="Output format for dry-run previews.",
+    )
     generate_parser.set_defaults(func=run_generate)
 
     inspect_parser = subparsers.add_parser(
