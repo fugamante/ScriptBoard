@@ -13,7 +13,7 @@ import sys
 EXPECTED_HELP_TEXT = "ScriptBoard screenplay storyboard tools."
 IGNORED_LOCAL_PATHS = (
     ".env.local",
-    ".venv",
+    ".venv/",
     "Storyboard_Image_Jobs.json",
     "Storyboard_Images/",
     "Storyboard_Prompt_Revisions.json",
